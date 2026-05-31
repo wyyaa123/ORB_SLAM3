@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "/usr/include/x86_64-linux-gnu",
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/Thirdparty/opencv4/include/opencv4",
+                "${workspaceFolder}",
+                "/usr/include/eigen3",
+                "${workspaceFolder}/include/CameraModels"
+            ],
+            "defines": ["COMPILEDWITHC11"],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

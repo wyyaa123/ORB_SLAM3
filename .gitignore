@@ -1,69 +1,95 @@
-# Prerequisites
-*.d
+# Ignore all
+*
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# Unignore all with extensions
+!*.*
 
-# Precompiled Headers
-*.gch
-*.pch
+# Unignore all dirs
+!*/
 
-# Linker files
-*.ilk
+CMakeLists.txt.user
+CMakeLists_modified.txt
 
-# Debugger Files
-*.pdb
+Examples/RGB-D/rgbd_tum
+Examples/RGB-D/rgbd_realsense_D435i
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
+Examples/RGB-D-Inertial/rgbd_inertial_realsense_D435i
+
+Examples/Monocular/mono_realsense_D435i
+Examples/Monocular/mono_euroc
+Examples/Monocular/mono_kitti
+Examples/Monocular/mono_tum
+Examples/Monocular/mono_tum_vi
+Examples/Monocular/mono_realsense_t265
+
+Examples/Stereo/stereo_euroc
+Examples/Stereo/stereo_kitti
+Examples/Stereo/stereo_tum_vi
+Examples/Stereo/stereo_realsense_t265
+Examples/Stereo/stereo_realsense_D435i
+
+Examples/Monocular-Inertial/mono_inertial_euroc
+Examples/Monocular-Inertial/mono_inertial_tum_vi
+Examples/Monocular-Inertial/mono_inertial_realsense_t265
+Examples/Monocular-Inertial/mono_inertial_realsense_D435i
+Examples/Monocular-Inertial/mono_inertial_realsense_D435i_2
+
+Examples/Stereo-Inertial/stereo_inertial_euroc
+Examples/Stereo-Inertial/stereo_inertial_tum_vi
+Examples/Stereo-Inertial/stereo_inertial_realsense_t265
+Examples/Stereo-Inertial/stereo_inertial_realsense_D435i
 
 
-# Fortran module files
-*.mod
-*.smod
+Examples/ROS/ORB_SLAM3/Mono
+Examples/ROS/ORB_SLAM3/Mono_Inertial
+Examples/ROS/ORB_SLAM3/MonoAR
+Examples/ROS/ORB_SLAM3/RGBD
+Examples/ROS/ORB_SLAM3/Stereo
+Examples/ROS/ORB_SLAM3/Stereo_Inertial
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+Examples/Calibration/recorder_realsense_D435i
 
-# Executables
-*.exe
-*.out
-*.app
+Examples/Tests/viewer_dataset
+Examples/Tests/sophus_test
 
-# Build directories
+Examples/ROS/ORB_SLAM3/CMakeLists.txt.user
+Examples/ROS/ORB_SLAM3/build/
+
+KeyFrameTrajectory.txt
+CameraTrajectory.txt
+kf_*.txt
+f_*.txt
+Thirdparty/DBoW2/build/
+Thirdparty/DBoW2/lib/
+Thirdparty/g2o/build/
+Thirdparty/g2o/config.h
+Thirdparty/g2o/lib/
+Vocabulary/ORBvoc.txt
 build/
-Build/
-build-*/
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
+lib/
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+cmake_modules/
+cmake-build-debug/
 
-# vcpkg
-vcpkg_installed/
+ExecMean.txt
+SessionInfo.txt
+Results_Euroc.txt
+LBA_Stats.txt
+LocalMapTimeStats.txt
+TrackLocalMapStats.txt
+TrackingTimeStats.txt
+time*
+Time*
+Table_Euroc
+Table_TUMVI_rooms/
+*.pyc
+*.osa
+.idea/
+my_settings.txt
 
-# debug information files
-*.dwo
+borrar/*
 
-# test output & cache
-Testing/
-.cache/
+*/ExecMean.txt
+
+/datasets
