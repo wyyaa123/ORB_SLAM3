@@ -6,7 +6,6 @@
 #include <stack>
 #include <map>
 
-#include <tbb/tbb.h>
 #include <tbb/parallel_for.h>
 #include <tbb/blocked_range.h>
 

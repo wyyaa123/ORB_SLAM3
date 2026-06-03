@@ -125,7 +125,8 @@ include/Config.h
 include/Settings.h
 include/edge.h
 include/edgeCluster.h
-include/edgeSelector.h)
+include/edgeSelector.h
+include/patch.h)
 
 add_subdirectory(Thirdparty/g2o)
 

@@ -31,7 +31,7 @@
 using namespace std;
 
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
-                vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps);
+                vector<string> &vstrImageFilenamesD, vector<string> &vstrImageFilenamesSem, vector<double> &vTimestamps);
 void LoadIMU(const string &strImuPath, vector<double> &vTimeStamps,
              vector<cv::Point3f> &vAcc, vector<cv::Point3f> &vGyro);
 
@@ -40,21 +40,22 @@ int main(int argc, char **argv)
     if (argc != 6)
     {
         cerr << endl
-             << "Usage: ./rgbd_inertial path_to_vocabulary path_to_settings path_to_sequence path_to_association path_to_imu_csv" << endl;
+             << "Usage: ./rgbd_inertial path_to_vocabulary path_to_settings path_to_sequence path_to_imu_csv path_to_association" << endl;
         return 1;
     }
 
     // Retrieve paths to images
     vector<string> vstrImageFilenamesRGB;
     vector<string> vstrImageFilenamesD;
+    vector<string> vstrImageFilenamesSem;
     vector<double> vTimestamps;
-    string strAssociationFilename = string(argv[4]);
-    LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vTimestamps);
+    string strAssociationFilename = string(argv[5]);
+    LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vstrImageFilenamesSem, vTimestamps);
 
     // Retrieve IMU data
     vector<double> vTimestampsImu;
     vector<cv::Point3f> vAcc, vGyro;
-    LoadIMU(string(argv[5]), vTimestampsImu, vAcc, vGyro);
+    LoadIMU(string(argv[4]), vTimestampsImu, vAcc, vGyro);
 
     // Check consistency in the number of images and depthmaps
     int nImages = vstrImageFilenamesRGB.size();
@@ -91,15 +92,17 @@ int main(int argc, char **argv)
     first_imu = max(0, first_imu - 1);
 
     // Main loop
-    cv::Mat imRGB, imD;
+    cv::Mat imRGB, imD, imSem;
     vector<ORB_SLAM3::IMU::Point> vImuMeas;
     for (int ni = 0; ni < nImages; ni++)
     {
         // Read image and depthmap from file
         std::string img_path = string(argv[3]) + "/" + vstrImageFilenamesRGB[ni];
         std::string depth_path = string(argv[3]) + "/" + vstrImageFilenamesD[ni];
+        std::string sem_path = string(argv[3]) + "/" + vstrImageFilenamesSem[ni];
         imRGB = cv::imread(img_path, cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
         imD = cv::imread(depth_path, cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
+        imSem = cv::imread(sem_path, cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
         double tframe = vTimestamps[ni];
 
         if (imRGB.empty())
@@ -116,6 +119,7 @@ int main(int argc, char **argv)
             int height = imRGB.rows * imageScale;
             cv::resize(imRGB, imRGB, cv::Size(width, height));
             cv::resize(imD, imD, cv::Size(width, height));
+            cv::resize(imSem, imSem, cv::Size(width, height));
         }
 
         // Load imu measurements from previous frame
@@ -141,7 +145,7 @@ int main(int argc, char **argv)
 #endif
 
         // Pass the image to the SLAM system
-        SLAM.TrackRGBD(imRGB, imD, tframe, vImuMeas);
+        SLAM.TrackRGBD(imRGB, imD, imSem, tframe, vImuMeas);
         // SLAM.TrackMonocular(imRGB, tframe, vImuMeas);
 
 #ifdef COMPILEDWITHC11
@@ -189,7 +193,7 @@ int main(int argc, char **argv)
 }
 
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
-                vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps)
+                vector<string> &vstrImageFilenamesD, vector<string> &vstrImageFilenamesSem, vector<double> &vTimestamps)
 {
     ifstream fAssociation;
     fAssociation.open(strAssociationFilename.c_str());
@@ -202,7 +206,7 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             stringstream ss;
             ss << s;
             double t;
-            string sRGB, sD;
+            string sRGB, sD, sSem;
             ss >> t;
             t *= 1e-9;
             vTimestamps.push_back(t);
@@ -211,6 +215,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             ss >> t;
             ss >> sD;
             vstrImageFilenamesD.push_back(sD);
+            ss >> t;
+            ss >> sSem;
+            vstrImageFilenamesSem.push_back(sSem);
         }
     }
 }
