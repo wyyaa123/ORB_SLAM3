@@ -21,10 +21,10 @@
 
 #include <vector>
 
-#include "Thirdparty/DBoW2/DBoW2/BowVector.h"
-#include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
+#include "DBoW2/BowVector.h"
+#include "DBoW2/FeatureVector.h"
 
-#include "Thirdparty/Sophus/sophus/geometry.hpp"
+#include "sophus/geometry.hpp"
 
 #include "ImuTypes.h"
 #include "ORBVocabulary.h"
@@ -41,6 +41,8 @@
 #include "edge.h"
 #include "edgeCluster.h"
 #include "patch.h"
+
+#include "bezierCurve.h"
 
 namespace ORB_SLAM3
 {
@@ -70,7 +72,7 @@ namespace ORB_SLAM3
         Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor *extractor, ORBVocabulary *voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera *pCamera, Frame *pPrevF = static_cast<Frame *>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
 
         // Constructor for RGB-D cameras with semantic information.
-        Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const cv::Mat &imSem, const double &timeStamp, ORBextractor *extractor, ORBVocabulary *voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera *pCamera, Frame *pPrevF = static_cast<Frame *>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
+        Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const cv::Mat &imSem, const double &timeStamp, ORBextractor *extractor, ORBVocabulary *voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera *pCamera, Frame *pPrevF, const IMU::Calib &ImuCalib, const int &edgeSampleSize);
 
         // Constructor for Monocular cameras.
         Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor *extractor, ORBVocabulary *voc, GeometricCamera *pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame *pPrevF = static_cast<Frame *>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
@@ -151,6 +153,27 @@ namespace ORB_SLAM3
             return mRwc;
         }
 
+        /**
+
+        @brief 获取当前帧的位姿变换 Tcw。
+
+
+        该函数返回当前帧保存的相机位姿 mTcw。mTcw 表示从世界坐标系到当前相机
+        坐标系的刚体变换，即 Tcw，可用于将世界坐标系下的三维点变换到当前相机
+        坐标系下：
+
+        Pc = Tcw * Pw
+
+        其中，Pw 表示世界坐标系下的三维点，Pc 表示当前相机坐标系下的三维点。
+        若需要获得当前相机在世界坐标系下的位姿 Twc，应对 mTcw 求逆。
+
+
+        @note 该函数当前未加锁。如果 Frame 的位姿可能被多个线程同时访问或修改，
+
+        需要根据实际线程模型考虑是否增加互斥保护。
+
+        @return Sophus::SE3 当前帧从世界坐标系到相机坐标系的位姿变换 Tcw。
+        */
         inline Sophus::SE3<float> GetPose() const
         {
             // TODO: can the Frame pose be accsessed from several threads? should this be protected somehow?
@@ -181,6 +204,7 @@ namespace ORB_SLAM3
         // Sophus/Eigen migration
         Sophus::SE3<float> mTcw;
         Eigen::Matrix<float, 3, 3> mRwc;
+        // 当前 Frame 的相机中心在世界坐标系下的位置
         Eigen::Matrix<float, 3, 1> mOw;
         Eigen::Matrix<float, 3, 3> mRcw;
         Eigen::Matrix<float, 3, 1> mtcw;
@@ -327,17 +351,29 @@ namespace ORB_SLAM3
         // Assign keypoints to the grid for speed up feature matching (called in the constructor).
         void AssignFeaturesToGrid();
 
+        void preprocessSem();
+
         void preprocessEdge();
 
         void cvt2OrderedEdges();
-
-        void genPatchSemEdge(const cv::Mat &semantic);
 
         Edge postprocessEdge(const Edge &edge, int step, double curvatureDiffThresh, int removeRadius = 0);
 
         void regionGrowthClusteringOCanny(float angle_Thres = 20.0f, const cv::Point &offset = cv::Point(0, 0));
 
-        cv::Mat visualizeEdges();
+        void getFineSampledPoints(int bias);
+
+        void assignProperty3D(const cv::Mat &matDepth);
+
+        inline void assignProperty3DEach(orderedEdgePoint &pt, const cv::Mat &matDepth);
+
+        void edgeCullingDepth();
+
+        void buildBezierCameraPoints(const cv::Mat &matDepth);
+
+        void assignPropertyIdx();
+
+        void constructSearchPlain();
 
         bool mbIsSet;
 
@@ -346,6 +382,7 @@ namespace ORB_SLAM3
         std::mutex *mpMutexImu;
 
     public:
+        // mpCamera2用于判断单相机模型模式
         GeometricCamera *mpCamera, *mpCamera2;
 
         // Number of KeyPoints extracted in the left and right images
@@ -380,9 +417,15 @@ namespace ORB_SLAM3
         cv::Mat mMatGradMagnitude;
         cv::Mat mMatGradAngle;
         cv::Mat mCanny;
+        std::map<int, int> mmIndexMap;
+        //-- 用于半径搜索的二维Mat
+        cv::Mat mMatSearch;
 
         std::vector<Edge> mvEdges;
         std::vector<EdgeCluster> mvEdgeClusters;
+        std::vector<Patch> mvSemPatches; // Map from label to patches <sem, patches>
+        std::map<int, std::vector<std::vector<orderedEdgePoint>>> mBeziers;
+        std::map<int, std::vector<std::vector<Eigen::Vector3f>>> mBezierCameraPoints;
 
         void PrintPointDistribution()
         {

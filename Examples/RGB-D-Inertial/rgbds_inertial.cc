@@ -168,7 +168,7 @@ int main(int argc, char **argv)
         if (ttrack < T)
             usleep((T - ttrack) * 1e6);
     }
-    sleep(200);
+    sleep(1000);
     // Stop all threads
     SLAM.Shutdown();
 

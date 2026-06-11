@@ -614,6 +614,7 @@ namespace ORB_SLAM3
         mMinFrames = 0;
         mMaxFrames = settings->fps();
         mbRGB = settings->rgb();
+        mEdgeSampleSize = settings->edgeSampleSize();
 
         // ORB parameters
         int nFeatures = settings->nFeatures();
@@ -644,6 +645,8 @@ namespace ORB_SLAM3
         mpImuCalib = new IMU::Calib(Tbc, Ng * sf, Na * sf, Ngw / sf, Naw / sf);
 
         mpImuPreintegratedFromLastKF = new IMU::Preintegrated(IMU::Bias(), *mpImuCalib);
+
+        
     }
 
     bool Tracking::ParseCamParamFile(cv::FileStorage &fSettings)
@@ -1607,7 +1610,7 @@ namespace ORB_SLAM3
         if (mSensor == System::RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
-            mCurrentFrame = Frame(mImGray, imDepth, imSem, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
+            mCurrentFrame = Frame(mImGray, imDepth, imSem, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib, mEdgeSampleSize);
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
@@ -1796,23 +1799,28 @@ namespace ORB_SLAM3
         // Verbose::PrintMess("Preintegration is finished!! ", Verbose::VERBOSITY_DEBUG);
     }
 
+    // 从上一帧（普通帧或关键帧）预测当前帧的状态
     bool Tracking::PredictStateIMU()
     {
+        // 没有上一帧，不能预测
         if (!mCurrentFrame.mpPrevFrame)
         {
             Verbose::PrintMess("No last frame", Verbose::VERBOSITY_NORMAL);
             return false;
         }
 
+        // 地图刚被更新：从最后一个关键帧预测当前帧
+        // mbMapUpdated 表示地图经过 Local BA / Loop Closing 等优化后，关键帧位姿可能已经更新。此时上一普通帧 mLastFrame 的状态可能不够可靠，所以用最近关键帧作为起点
         if (mbMapUpdated && mpLastKeyFrame)
         {
             const Eigen::Vector3f twb1 = mpLastKeyFrame->GetImuPosition();
-            const Eigen::Matrix3f Rwb1 = mpLastKeyFrame->GetImuRotation();
+            const Eigen::Matrix3f Rwb1 = mpLastKeyFrame->GetImuRotation(); // T_w_c * T_c_b
             const Eigen::Vector3f Vwb1 = mpLastKeyFrame->GetVelocity();
 
             const Eigen::Vector3f Gz(0, 0, -IMU::GRAVITY_VALUE);
             const float t12 = mpImuPreintegratedFromLastKF->dT;
 
+            // 规范化
             Eigen::Matrix3f Rwb2 = IMU::NormalizeRotation(Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaRotation(mpLastKeyFrame->GetImuBias()));
             Eigen::Vector3f twb2 = twb1 + Vwb1 * t12 + 0.5f * t12 * t12 * Gz + Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaPosition(mpLastKeyFrame->GetImuBias());
             Eigen::Vector3f Vwb2 = Vwb1 + t12 * Gz + Rwb1 * mpImuPreintegratedFromLastKF->GetDeltaVelocity(mpLastKeyFrame->GetImuBias());
@@ -1822,6 +1830,7 @@ namespace ORB_SLAM3
             mCurrentFrame.mPredBias = mCurrentFrame.mImuBias;
             return true;
         }
+        // 地图没更新：从上一普通帧预测当前帧
         else if (!mbMapUpdated)
         {
             const Eigen::Vector3f twb1 = mLastFrame.GetImuPosition();
@@ -1856,7 +1865,8 @@ namespace ORB_SLAM3
 
         if (bStepByStep)
         {
-            std::cout << "Tracking: Waiting to the next step" << std::endl;
+            // std::cout << "Tracking: Waiting to the next step" << std::endl;
+            spdlog::info("Tracking: Waiting to the next step");
             while (!mbStep && bStepByStep)
                 usleep(500);
             mbStep = false;
@@ -1864,7 +1874,8 @@ namespace ORB_SLAM3
 
         if (mpLocalMapper->mbBadImu)
         {
-            cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
+            // cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
+            spdlog::info("TRACK: Reset map because local mapper set the bad imu flag");
             mpSystem->ResetActiveMap();
             return;
         }
@@ -1872,14 +1883,16 @@ namespace ORB_SLAM3
         Map *pCurrentMap = mpAtlas->GetCurrentMap();
         if (!pCurrentMap)
         {
-            cout << "ERROR: There is not an active map in the atlas" << endl;
+            // cout << "ERROR: There is not an active map in the atlas" << endl;
+            spdlog::warn("ERROR: There is not an active map in the atlas");
         }
 
         if (mState != NO_IMAGES_YET)
         {
             if (mLastFrame.mTimeStamp > mCurrentFrame.mTimeStamp)
             {
-                cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
+                // cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
+                spdlog::error("ERROR: Frame with a timestamp older than previous frame detected!");
                 unique_lock<mutex> lock(mMutexImuQueue);
                 mlQueueImuData.clear();
                 CreateMapInAtlas();
@@ -1924,11 +1937,13 @@ namespace ORB_SLAM3
 
         mLastProcessedState = mState;
 
+        // printf("mbCreatedMap: %s\n", mbCreatedMap ? "true" : "false");
         if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mbCreatedMap)
         {
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_StartPreIMU = std::chrono::steady_clock::now();
 #endif
+            // printf("Preintegrating IMU!\n");
             PreintegrateIMU();
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndPreIMU = std::chrono::steady_clock::now();
@@ -1996,8 +2011,15 @@ namespace ORB_SLAM3
                 {
 
                     // Local Mapping might have changed some MapPoints tracked in last frame
+                    // 因为 ORB-SLAM3 是多线程系统。Tracking 在跟踪当前帧时，LocalMapping / LoopClosing 可能同时对地图点做融合。例如两个 MapPoint 被判断为同一个真实空间点，就会调用。
                     CheckReplacedInLastFrame();
 
+                    // printf("mbVelocity is %s, pCurrentMap->isImuInitialized() is %s.\n", mbVelocity ? "true" : "false", pCurrentMap->isImuInitialized() ? "true" : "false");
+                    // Step 6.2 运动模型是空的并且imu未初始化或刚完成重定位，跟踪参考关键帧；否则恒速模型跟踪
+                    // pCurrentMap->isImuInitialized()会在方法PreintegrateIMU()中被设置为true
+                    // 第一个条件,如果运动模型为空并且imu未初始化,说明是刚开始第一帧跟踪，或者已经跟丢了。
+                    // 第二个条件,如果当前帧紧紧地跟着在重定位的帧的后面，我们用重定位帧来恢复位姿
+                    // mnLastRelocFrameId 上一次重定位的那一帧
                     if ((!mbVelocity && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId < mnLastRelocFrameId + 2)
                     {
                         Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
@@ -2006,6 +2028,9 @@ namespace ORB_SLAM3
                     else
                     {
                         Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
+                        // 用恒速模型跟踪。所谓的恒速就是假设上上帧到上一帧的位姿=上一帧的位姿到当前帧位姿
+                        // 根据恒速模型设定当前帧的初始位姿，用最近的普通帧来跟踪当前的普通帧
+                        // 通过投影的方式在参考帧中找当前帧特征点的匹配点，优化每个特征点所对应3D点的投影误差即可得到位姿
                         bOK = TrackWithMotionModel();
                         if (!bOK)
                             bOK = TrackReferenceKeyFrame();
@@ -2013,6 +2038,7 @@ namespace ORB_SLAM3
 
                     if (!bOK)
                     {
+                        // mnFramesToResetIMU 是一个 重定位后 IMU 状态重置/恢复的帧数窗口
                         if (mCurrentFrame.mnId <= (mnLastRelocFrameId + mnFramesToResetIMU) &&
                             (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
                         {
@@ -2032,7 +2058,7 @@ namespace ORB_SLAM3
                 }
                 else
                 {
-
+                    // 如果跟丢了，先判断是短暂跟丢还是完全跟丢。短暂跟丢的话，先用IMU预测位姿，如果IMU预测的位姿不可靠或者时间超过阈值了，就认为完全跟丢了；完全跟丢了的话，直接重置地图或者重定位。
                     if (mState == RECENTLY_LOST)
                     {
                         Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
@@ -2353,6 +2379,7 @@ namespace ORB_SLAM3
             // Store frame pose information to retrieve the complete camera trajectory afterwards.
             if (mCurrentFrame.isSet())
             {
+                // 参考帧到当前帧的位姿相对变换
                 Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() * mCurrentFrame.mpReferenceKF->GetPoseInverse();
                 mlRelativeFramePoses.push_back(Tcr_);
                 mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
@@ -2433,6 +2460,7 @@ namespace ORB_SLAM3
                     float z = mCurrentFrame.mvDepth[i];
                     if (z > 0)
                     {
+                        // 世界系下的特征点3D坐标
                         Eigen::Vector3f x3D;
                         mCurrentFrame.UnprojectStereo(i, x3D);
                         MapPoint *pNewMP = new MapPoint(x3D, pKFini, mpAtlas->GetCurrentMap());
@@ -2802,6 +2830,7 @@ namespace ORB_SLAM3
 
                     mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
                     mCurrentFrame.mvbOutlier[i] = false;
+                    // for stereo N = Nleft + Nright, for mono N = -1
                     if (i < mCurrentFrame.Nleft)
                     {
                         pMP->mbTrackInView = false;
@@ -2829,11 +2858,16 @@ namespace ORB_SLAM3
     {
         // Update pose according to reference keyframe
         KeyFrame *pRef = mLastFrame.mpReferenceKF;
+        // 上一帧 mLastFrame 相对于其参考关键帧 pRef 的相对位姿
         Sophus::SE3f Tlr = mlRelativeFramePoses.back();
-        mLastFrame.SetPose(Tlr * pRef->GetPose());
+        mLastFrame.SetPose(Tlr * pRef->GetPose()); // T_c_r * T_r_w = T_c_w
 
+        // spdlog::info("judgement");
         if (mnLastKeyFrameId == mLastFrame.mnId || mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR || !mbOnlyTracking)
+        {
+            // spdlog::info("Skipping last frame update");
             return;
+        }
 
         // Create "visual odometry" MapPoints
         // We sort points according to their measured depth by the stereo/RGB-D sensor
@@ -2899,22 +2933,26 @@ namespace ORB_SLAM3
         }
     }
 
+    // 两种位姿更新方式：IMU预测和常速模型预测
     bool Tracking::TrackWithMotionModel()
     {
         ORBmatcher matcher(0.9, true);
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
-        UpdateLastFrame();
+        UpdateLastFrame(); // 更新上一帧的位姿
 
+        // spdlog::info("Judgement state update strategy: ");
         if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
         {
             // Predict state with IMU if it is initialized and it doesnt need reset
+            // spdlog::info("Predicting state with IMU");
             PredictStateIMU();
             return true;
         }
         else
         {
+            // spdlog::info("Predicting state with constant velocity model");
             mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
         }
 
@@ -3003,14 +3041,14 @@ namespace ORB_SLAM3
         SearchLocalPoints();
 
         // TOO check outliers before PO
-        int aux1 = 0, aux2 = 0;
-        for (int i = 0; i < mCurrentFrame.N; i++)
-            if (mCurrentFrame.mvpMapPoints[i])
-            {
-                aux1++;
-                if (mCurrentFrame.mvbOutlier[i])
-                    aux2++;
-            }
+        // int aux1 = 0, aux2 = 0;
+        // for (int i = 0; i < mCurrentFrame.N; i++)
+        //     if (mCurrentFrame.mvpMapPoints[i])
+        //     {
+        //         aux1++;
+        //         if (mCurrentFrame.mvbOutlier[i])
+        //             aux2++;
+        //     }
 
         int inliers;
         if (!mpAtlas->isImuInitialized())
@@ -3038,14 +3076,14 @@ namespace ORB_SLAM3
             }
         }
 
-        aux1 = 0, aux2 = 0;
-        for (int i = 0; i < mCurrentFrame.N; i++)
-            if (mCurrentFrame.mvpMapPoints[i])
-            {
-                aux1++;
-                if (mCurrentFrame.mvbOutlier[i])
-                    aux2++;
-            }
+        // aux1 = 0, aux2 = 0;
+        // for (int i = 0; i < mCurrentFrame.N; i++)
+        //     if (mCurrentFrame.mvpMapPoints[i])
+        //     {
+        //         aux1++;
+        //         if (mCurrentFrame.mvbOutlier[i])
+        //             aux2++;
+        //     }
 
         mnMatchesInliers = 0;
 
@@ -3461,7 +3499,9 @@ namespace ORB_SLAM3
             int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapPoints, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
         }
     }
-
+    // 1、把当前局部地图点交给 Atlas，用于显示
+    // 2、更新局部关键帧和局部地图点
+    // 3、填充mvpLocalKeyFrames并找出与当前帧观测到的特征点数量最多的关键帧作为mpReferenceKF参考关键帧候选
     void Tracking::UpdateLocalMap()
     {
         // This is for visualization
@@ -3472,6 +3512,7 @@ namespace ORB_SLAM3
         UpdateLocalPoints();
     }
 
+    // 根据mvpLocalKeyFrames中的关键帧，找出这些关键帧观测到的地图点，并把这些地图点加入mvpLocalMapPoints中
     void Tracking::UpdateLocalPoints()
     {
         mvpLocalMapPoints.clear();
@@ -3493,7 +3534,7 @@ namespace ORB_SLAM3
                     continue;
                 if (!pMP->isBad())
                 {
-                    count_pts++;
+                    ++count_pts;
                     mvpLocalMapPoints.push_back(pMP);
                     pMP->mnTrackReferenceForFrame = mCurrentFrame.mnId;
                 }
@@ -3501,6 +3542,7 @@ namespace ORB_SLAM3
         }
     }
 
+    // 填充mvpLocalKeyFrames并找出与当前帧观测到的特征点数量最多的关键帧作为参考关键帧候选
     void Tracking::UpdateLocalKeyFrames()
     {
         // Each map point vote for the keyframes in which it has been observed
@@ -3514,9 +3556,10 @@ namespace ORB_SLAM3
                 {
                     if (!pMP->isBad())
                     {
+                        // 同一个特征点在哪些关键帧中被观测到，tuple<int, int>（左右）是观测到的特征点在关键帧中的索引
                         const map<KeyFrame *, tuple<int, int>> observations = pMP->GetObservations();
                         for (map<KeyFrame *, tuple<int, int>>::const_iterator it = observations.begin(), itend = observations.end(); it != itend; it++)
-                            keyframeCounter[it->first]++;
+                            keyframeCounter[it->first]++; // 统计每个关键帧观测到的特征点数量，后面代码会把这些关键帧加入 mvpLocalKeyFrames，并找出票数最多的关键帧作为当前帧的参考关键帧候选
                     }
                     else
                     {
@@ -3570,7 +3613,7 @@ namespace ORB_SLAM3
                 pKFmax = pKF;
             }
 
-            mvpLocalKeyFrames.push_back(pKF);
+            mvpLocalKeyFrames.push_back(pKF); // 由于遍历的是map所以mvpLocalKeyFrames中的关键帧是不一样的
             pKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
         }
 
@@ -3590,10 +3633,13 @@ namespace ORB_SLAM3
                 KeyFrame *pNeighKF = *itNeighKF;
                 if (!pNeighKF->isBad())
                 {
+                    // 检查这个关键帧本帧是否已经加入过
                     if (pNeighKF->mnTrackReferenceForFrame != mCurrentFrame.mnId)
                     {
                         mvpLocalKeyFrames.push_back(pNeighKF);
+                        // 用 mnTrackReferenceForFrame 标记“当前帧已经处理过”
                         pNeighKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                        // 只加入一个邻居
                         break;
                     }
                 }

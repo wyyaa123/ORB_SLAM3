@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <spdlog/spdlog.h>
+#include <spdlog/fmt/ostr.h>
+#include "Logger.h"
 
 namespace ORB_SLAM3 {
 
@@ -121,6 +124,8 @@ namespace ORB_SLAM3 {
         cv::Mat M2l() {return M2l_;}
         cv::Mat M1r() {return M1r_;}
         cv::Mat M2r() {return M2r_;}
+
+        int edgeSampleSize() {return edgeSampleSize_;}
 
     private:
         template<typename T>
@@ -228,6 +233,10 @@ namespace ORB_SLAM3 {
          */
         float thFarPoints_;
 
+        /*
+         * Edge extraction and clustering parameters
+         */
+        int edgeSampleSize_;
     };
 };
 

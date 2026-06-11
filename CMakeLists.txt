@@ -37,9 +37,9 @@ LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 set(OpenCV_DIR /home/wyyaa123/ORB_SLAM3/Thirdparty/opencv4/lib/cmake/opencv4)
 find_package(OpenCV 4.4)
-   if(NOT OpenCV_FOUND)
-      message(FATAL_ERROR "OpenCV >= 4.4 not found.")
-   endif()
+if(NOT OpenCV_FOUND)
+    message(FATAL_ERROR "OpenCV >= 4.4 not found.")
+endif()
 
 MESSAGE("OPENCV VERSION:")
 MESSAGE(${OpenCV_VERSION})
@@ -50,10 +50,12 @@ find_package(realsense2)
 find_package(TBB REQUIRED)
 
 include_directories(
-${PROJECT_SOURCE_DIR}
 ${PROJECT_SOURCE_DIR}/include
 ${PROJECT_SOURCE_DIR}/include/CameraModels
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
+${PROJECT_SOURCE_DIR}/Thirdparty/spdlog/include
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
 ${TBB_INCLUDE_DIRS}
@@ -92,7 +94,8 @@ src/Config.cc
 src/Settings.cc
 src/edge.cpp
 src/edgeCluster.cpp
-src/edgeSelector.cpp
+src/Logger.cpp
+src/bezierCurve.cpp
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -125,8 +128,9 @@ include/Config.h
 include/Settings.h
 include/edge.h
 include/edgeCluster.h
-include/edgeSelector.h
-include/patch.h)
+include/patch.h
+include/Logger.h
+include/bezierCurve.h)
 
 add_subdirectory(Thirdparty/g2o)
 
@@ -136,6 +140,7 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+${PROJECT_SOURCE_DIR}/Thirdparty/spdlog/build/libspdlog.a
 -lboost_serialization
 -lcrypto
 TBB::tbb
@@ -171,9 +176,9 @@ endif()
 # RGB-D inertial examples
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)
 
-add_executable(rgbd_inertial
-        Examples/RGB-D-Inertial/rgbd_inertial.cc)
-target_link_libraries(rgbd_inertial ${PROJECT_NAME})
+add_executable(rgbds_inertial
+        Examples/RGB-D-Inertial/rgbds_inertial.cc)
+target_link_libraries(rgbds_inertial ${PROJECT_NAME})
 
 if(realsense2_FOUND)
     add_executable(rgbd_inertial_realsense_D435i

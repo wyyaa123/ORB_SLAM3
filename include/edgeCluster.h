@@ -35,6 +35,18 @@ struct edgePoint{
     //-- 是否是区域生长的遍历起点（root）
     bool isRoot;
 
+    int cls;
+
+    edgePoint(cv::Point _pixel, int _point_id, int _father_id, int _cls)
+    {
+        pixel = _pixel;
+        father_id = _father_id;
+        point_id = _point_id;
+        degree = 0;
+        cls = _cls;
+        isRoot = false;
+    }
+
     edgePoint(cv::Point _pixel, int _point_id, int _father_id)
     {
         pixel = _pixel;
@@ -66,8 +78,6 @@ public:
 private:
     //-- 计算每个点的入度（即该节点是几个点的父节点）
     void calculateDegree();
-
-
 };
 
 #endif

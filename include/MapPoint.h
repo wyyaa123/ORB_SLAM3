@@ -174,6 +174,7 @@ public:
     float mTrackDepthR;
     float mTrackProjXR;
     float mTrackProjYR;
+    // 是否在左目/主相机视野内， 是否在右目相机视野内
     bool mbTrackInView, mbTrackInViewR;
     int mnTrackScaleLevel, mnTrackScaleLevelR;
     float mTrackViewCos, mTrackViewCosR;

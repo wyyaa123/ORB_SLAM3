@@ -141,6 +141,7 @@ public:
     Frame mLastFrame;
 
     cv::Mat mImGray;
+    cv::Mat mKfImg;
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -304,6 +305,7 @@ protected:
     int mMaxFrames;
 
     int mnFirstImuFrameId;
+    // mnFramesToResetIMU 是一个重定位后 IMU 状态重置/恢复的帧数窗口
     int mnFramesToResetIMU;
 
     // Threshold close/far points
@@ -320,6 +322,7 @@ protected:
     //Last Frame, KeyFrame and Relocalisation Info
     KeyFrame* mpLastKeyFrame;
     unsigned int mnLastKeyFrameId;
+    // 上一次重定位的那一帧
     unsigned int mnLastRelocFrameId;
     double mTimeStampLost;
     double time_recently_lost;
@@ -332,6 +335,7 @@ protected:
 
     //Motion Model
     bool mbVelocity{false};
+    // 上一帧相机坐标系 -> 当前帧相机坐标系 的相对变换
     Sophus::SE3f mVelocity;
 
     //Color order (true RGB, false BGR, ignored if grayscale)
@@ -358,6 +362,8 @@ protected:
     Sophus::SE3f mTlr;
 
     void newParameterLoader(Settings* settings);
+
+    int mEdgeSampleSize;
 
 #ifdef REGISTER_LOOP
     bool Stop();
