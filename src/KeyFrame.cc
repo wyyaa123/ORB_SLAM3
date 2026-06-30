@@ -56,7 +56,7 @@ namespace ORB_SLAM3
                                                                        mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap), mbCurrentPlaceRecognition(false), mNameFile(F.mNameFile), mnMergeCorrectedForKF(0),
                                                                        mpCamera(F.mpCamera), mpCamera2(F.mpCamera2),
                                                                        mvLeftToRightMatch(F.mvLeftToRightMatch), mvRightToLeftMatch(F.mvRightToLeftMatch), mTlr(F.GetRelativePoseTlr()),
-                                                                       mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mImg(F.mImgLeft.clone()), mvEdges(F.mvEdges), mBezierCameraPoints(F.mBezierCameraPoints), mnNumberOfOpt(0), mbHasVelocity(false)
+                                                                       mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mImg(F.mImgLeft.clone()), mnNumberOfOpt(0), mbHasVelocity(false)
     {
         mnId = nNextId++;
 

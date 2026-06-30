@@ -27,7 +27,6 @@
 #include <opencv2/features2d/features2d.hpp>
 
 #include <mutex>
-#include <map>
 #include <unordered_set>
 
 namespace ORB_SLAM3
@@ -48,11 +47,6 @@ namespace ORB_SLAM3
         // Draw last processed frame.
         cv::Mat DrawFrame(float imageScale = 1.f);
         cv::Mat DrawRightFrame(float imageScale = 1.f);
-        cv::Mat DrawFrameEdges();
-        cv::Mat DrawFrameBeziers();
-        cv::Mat DrawFrameSemanticMask(float imageScale = 1.f);
-        cv::Mat DrawKeyFrameEdges();
-        cv::Mat DrawKeyFrame(float imageScale = 1.f);
 
         bool both;
 
@@ -60,7 +54,7 @@ namespace ORB_SLAM3
         void DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText);
 
         // Info of the frame to be drawn
-        cv::Mat mIm, mImRight, mKfImg, mSemMask;
+        cv::Mat mIm, mImRight;
         int N;
         vector<cv::KeyPoint> mvCurrentKeys, mvCurrentKeysRight;
         vector<bool> mvbMap, mvbVO;
@@ -83,9 +77,6 @@ namespace ORB_SLAM3
         vector<MapPoint *> mvpMatchedMPs;
         vector<cv::KeyPoint> mvOutlierKeys;
         vector<MapPoint *> mvpOutlierMPs;
-        std::vector<Edge> mvEdges;
-        std::vector<Edge> mvKfEdges;
-        std::map<int, std::vector<std::vector<orderedEdgePoint>>> mBeziers;
 
         map<long unsigned int, cv::Point2f> mmProjectPoints;
         map<long unsigned int, cv::Point2f> mmMatchedInImage;

@@ -175,47 +175,6 @@ namespace ORB_SLAM3
         glEnd();
     }
 
-    void MapDrawer::DrawBezierCurves()
-    {
-        Map *pActiveMap = mpAtlas->GetCurrentMap();
-        if (!pActiveMap)
-            return;
-
-        const vector<KeyFrame *> vpKFs = pActiveMap->GetAllKeyFrames();
-        if (vpKFs.empty())
-            return;
-
-        glLineWidth(2.0f);
-        glColor4f(1.0f, 0.45f, 0.0f, 0.9f);
-
-        for (KeyFrame *pKF : vpKFs)
-        {
-            if (!pKF || pKF->isBad() || pKF->mBezierCameraPoints.empty())
-                continue;
-
-            Eigen::Matrix4f Twc = pKF->GetPoseInverse().matrix();
-
-            glPushMatrix();
-            glMultMatrixf((GLfloat *)Twc.data());
-
-            for (const auto &edgeCurves : pKF->mBezierCameraPoints)
-            {
-                for (const std::vector<Eigen::Vector3f> &segment : edgeCurves.second)
-                {
-                    if (segment.size() < 2)
-                        continue;
-
-                    glBegin(GL_LINE_STRIP);
-                    for (const Eigen::Vector3f &pc : segment)
-                        glVertex3f(pc.x(), pc.y(), pc.z());
-                    glEnd();
-                }
-            }
-
-            glPopMatrix();
-        }
-    }
-
     void MapDrawer::DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph, const bool bDrawInertialGraph, const bool bDrawOptLba)
     {
         const float &w = mKeyFrameSize;

@@ -94,8 +94,8 @@ src/Config.cc
 src/Settings.cc
 src/edge.cpp
 src/edgeCluster.cpp
-src/Logger.cpp
 src/bezierCurve.cpp
+src/edgeExtracter.cc
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -130,7 +130,8 @@ include/edge.h
 include/edgeCluster.h
 include/patch.h
 include/Logger.h
-include/bezierCurve.h)
+include/bezierCurve.h
+include/edgeExtracter.h)
 
 add_subdirectory(Thirdparty/g2o)
 
