@@ -134,6 +134,7 @@ protected:
     bool CheckNewKeyFrames();
     void ProcessNewKeyFrame();
     void CreateNewMapPoints();
+    void CreateNewMapEdges();
 
     void MapPointCulling();
     void SearchInNeighbors();

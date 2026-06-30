@@ -38,11 +38,7 @@
 #include "Eigen/Core"
 #include "sophus/se3.hpp"
 
-#include "edge.h"
-#include "edgeCluster.h"
-#include "patch.h"
-
-#include "bezierCurve.h"
+#include "edgeExtracter.h"
 
 namespace ORB_SLAM3
 {
@@ -54,8 +50,6 @@ namespace ORB_SLAM3
     class ConstraintPoseImu;
     class GeometricCamera;
     class ORBextractor;
-
-    inline float calcAngleBias(float angle_1, float angle_2);
 
     class Frame
     {
@@ -82,6 +76,9 @@ namespace ORB_SLAM3
 
         // Extract ORB on the image. 0 for left image and 1 for right image.
         void ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1);
+
+        // Extract Edge on the image. 0 for semantic image and 1 for none semantic image.
+        void ExtractEdge(int flag, double _angleThreshold, double _threshold1, double _threshold2);
 
         // Compute Bag of Words representation.
         void ComputeBoW();
@@ -257,6 +254,8 @@ namespace ORB_SLAM3
 
         // Number of KeyPoints.
         int N;
+        // Number of sampled points for bezier curve.
+        int NBezier = 0;
 
         // Vector of keypoints (original for visualization) and undistorted (actually used by the system).
         // In the stereo case, mvKeysUn is redundant as images must be rectified.
@@ -351,27 +350,11 @@ namespace ORB_SLAM3
         // Assign keypoints to the grid for speed up feature matching (called in the constructor).
         void AssignFeaturesToGrid();
 
-        void preprocessSem();
+        void assignProperty3D();
 
-        void preprocessEdge();
+        inline void assignProperty3DEach(orderedEdgePoint &pt);
 
-        void cvt2OrderedEdges();
-
-        Edge postprocessEdge(const Edge &edge, int step, double curvatureDiffThresh, int removeRadius = 0);
-
-        void regionGrowthClusteringOCanny(float angle_Thres = 20.0f, const cv::Point &offset = cv::Point(0, 0));
-
-        void getFineSampledPoints(int bias);
-
-        void assignProperty3D(const cv::Mat &matDepth);
-
-        inline void assignProperty3DEach(orderedEdgePoint &pt, const cv::Mat &matDepth);
-
-        void edgeCullingDepth();
-
-        void buildBezierCameraPoints(const cv::Mat &matDepth);
-
-        void assignPropertyIdx();
+        void BezierCullingDepth();
 
         void constructSearchPlain();
 
@@ -414,18 +397,11 @@ namespace ORB_SLAM3
 
         cv::Mat mImgLeft, mImgRight;
         cv::Mat mImgDepth, mImgSem;
-        cv::Mat mMatGradMagnitude;
-        cv::Mat mMatGradAngle;
-        cv::Mat mCanny;
-        std::map<int, int> mmIndexMap;
-        //-- 用于半径搜索的二维Mat
-        cv::Mat mMatSearch;
 
-        std::vector<Edge> mvEdges;
-        std::vector<EdgeCluster> mvEdgeClusters;
-        std::vector<Patch> mvSemPatches; // Map from label to patches <sem, patches>
-        std::map<int, std::vector<std::vector<orderedEdgePoint>>> mBeziers;
-        std::map<int, std::vector<std::vector<Eigen::Vector3f>>> mBezierCameraPoints;
+        // edge_id and edge_cls
+        cv::Mat mMatSearch;
+        std::vector<Edge> mvEdges; // List of edge points extracted from the image
+        std::vector<BezierCurve> mvBezierCurves; // List of Bezier curves fitted to edges
 
         void PrintPointDistribution()
         {

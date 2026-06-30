@@ -22,6 +22,7 @@
 
 #include "MapPoint.h"
 #include "KeyFrame.h"
+#include "MapEdge.h"
 
 #include <set>
 #include <pangolin/pangolin.h>
@@ -34,6 +35,7 @@ namespace ORB_SLAM3
 {
 
 class MapPoint;
+class MapEdge;
 class KeyFrame;
 class Atlas;
 class KeyFrameDatabase;
@@ -75,7 +77,9 @@ public:
 
     void AddKeyFrame(KeyFrame* pKF);
     void AddMapPoint(MapPoint* pMP);
+    void AddMapEdge(MapEdge* pME);
     void EraseMapPoint(MapPoint* pMP);
+    void EraseMapEdge(MapEdge* pME);
     void EraseKeyFrame(KeyFrame* pKF);
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
     void InformNewBigChange();
@@ -83,9 +87,11 @@ public:
 
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
+    std::vector<MapEdge*> GetAllMapEdges();
     std::vector<MapPoint*> GetReferenceMapPoints();
 
     long unsigned int MapPointsInMap();
+    long unsigned int MapEdgesInMap();
     long unsigned  KeyFramesInMap();
 
     long unsigned int GetId();
@@ -142,6 +148,7 @@ public:
 
     // This avoid that two points are created simultaneously in separate threads (id conflict)
     std::mutex mMutexPointCreation;
+    std::mutex mMutexEdgeCreation;
 
     bool mbFail;
 
@@ -160,6 +167,7 @@ protected:
     long unsigned int mnId;
 
     std::set<MapPoint*> mspMapPoints;
+    std::set<MapEdge*> mspMapEdges;
     std::set<KeyFrame*> mspKeyFrames;
 
     // Save/load, the set structure is broken in libboost 1.58 for ubuntu 16.04, a vector is serializated

@@ -19,6 +19,7 @@
 #include "KeyFrame.h"
 #include "Converter.h"
 #include "ImuTypes.h"
+#include "MapEdge.h"
 #include <mutex>
 
 namespace ORB_SLAM3
@@ -56,9 +57,10 @@ namespace ORB_SLAM3
                                                                        mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap), mbCurrentPlaceRecognition(false), mNameFile(F.mNameFile), mnMergeCorrectedForKF(0),
                                                                        mpCamera(F.mpCamera), mpCamera2(F.mpCamera2),
                                                                        mvLeftToRightMatch(F.mvLeftToRightMatch), mvRightToLeftMatch(F.mvRightToLeftMatch), mTlr(F.GetRelativePoseTlr()),
-                                                                       mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mImg(F.mImgLeft.clone()), mvEdges(F.mvEdges), mBezierCameraPoints(F.mBezierCameraPoints), mnNumberOfOpt(0), mbHasVelocity(false)
+                                                                       mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mImg(F.mImgLeft.clone()), mvEdges(F.mvEdges), mMatSearch(F.mMatSearch), mvBezierCurves(F.mvBezierCurves), mnNumberOfOpt(0), mbHasVelocity(false)
     {
         mnId = nNextId++;
+        mvpMapEdges = vector<MapEdge *>(mvBezierCurves.size(), static_cast<MapEdge *>(NULL));
 
         mGrid.resize(mnGridCols);
         if (F.Nleft != -1)
@@ -322,6 +324,98 @@ namespace ORB_SLAM3
     void KeyFrame::ReplaceMapPointMatch(const int &idx, MapPoint *pMP)
     {
         mvpMapPoints[idx] = pMP;
+    }
+
+    void KeyFrame::AddMapEdge(MapEdge *pME, const size_t &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        if (idx >= mvpMapEdges.size())
+            mvpMapEdges.resize(idx + 1, static_cast<MapEdge *>(NULL));
+
+        mvpMapEdges[idx] = pME;
+    }
+
+    void KeyFrame::EraseMapEdgeMatch(const int &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        if (idx >= 0 && idx < static_cast<int>(mvpMapEdges.size()))
+            mvpMapEdges[idx] = static_cast<MapEdge *>(NULL);
+    }
+
+    void KeyFrame::EraseMapEdgeMatch(MapEdge *pME)
+    {
+        if (!pME)
+            return;
+
+        const int idx = pME->GetIndexInKeyFrame(this);
+        if (idx >= 0 && idx < static_cast<int>(mvpMapEdges.size()))
+            mvpMapEdges[idx] = static_cast<MapEdge *>(NULL);
+    }
+
+    void KeyFrame::ReplaceMapEdgeMatch(const int &idx, MapEdge *pME)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        if (idx >= 0)
+        {
+            if (idx >= static_cast<int>(mvpMapEdges.size()))
+                mvpMapEdges.resize(idx + 1, static_cast<MapEdge *>(NULL));
+
+            mvpMapEdges[idx] = pME;
+        }
+    }
+
+    set<MapEdge *> KeyFrame::GetMapEdges()
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        set<MapEdge *> s;
+        for (size_t i = 0; i < mvpMapEdges.size(); i++)
+        {
+            if (!mvpMapEdges[i])
+                continue;
+            MapEdge *pME = mvpMapEdges[i];
+            if (!pME->isBad())
+                s.insert(pME);
+        }
+        return s;
+    }
+
+    vector<MapEdge *> KeyFrame::GetMapEdgeMatches()
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return mvpMapEdges;
+    }
+
+    int KeyFrame::TrackedMapEdges(const int &minObs)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        int nEdges = 0;
+        const bool bCheckObs = minObs > 0;
+        for (size_t i = 0, iend = mvpMapEdges.size(); i < iend; i++)
+        {
+            MapEdge *pME = mvpMapEdges[i];
+            if (!pME || pME->isBad())
+                continue;
+
+            if (bCheckObs)
+            {
+                if (pME->Observations() >= minObs)
+                    nEdges++;
+            }
+            else
+            {
+                nEdges++;
+            }
+        }
+        return nEdges;
+    }
+
+    MapEdge *KeyFrame::GetMapEdge(const size_t &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        if (idx >= mvpMapEdges.size())
+            return static_cast<MapEdge *>(NULL);
+
+        return mvpMapEdges[idx];
     }
 
     set<MapPoint *> KeyFrame::GetMapPoints()

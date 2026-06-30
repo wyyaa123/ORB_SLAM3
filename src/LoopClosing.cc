@@ -2066,14 +2066,17 @@ namespace ORB_SLAM3
 
             if (mMatchedMP.size() == 0)
             {
-                cout << "CHECK-OBS: KF " << pKFi1->mnId << " has not any matched MP with the other map" << endl;
+                // cout << "CHECK-OBS: KF " << pKFi1->mnId << " has not any matched MP with the other map" << endl;
+                spdlog::info("CHECK-OBS: KF {} has not any matched MP with the other map", pKFi1->mnId);
             }
             else
             {
-                cout << "CHECK-OBS: KF " << pKFi1->mnId << " has matched MP with " << mMatchedMP.size() << " KF from the other map" << endl;
+                // cout << "CHECK-OBS: KF " << pKFi1->mnId << " has matched MP with " << mMatchedMP.size() << " KF from the other map" << endl;
+                spdlog::info("CHECK-OBS: KF {} has matched MP with {} KF from the other map", pKFi1->mnId, mMatchedMP.size());
                 for (pair<KeyFrame *, int> matchedKF : mMatchedMP)
                 {
-                    cout << "   -KF: " << matchedKF.first->mnId << ", Number of matches: " << matchedKF.second << endl;
+                    // cout << "   -KF: " << matchedKF.first->mnId << ", Number of matches: " << matchedKF.second << endl;
+                    spdlog::info("   -KF: {}, Number of matches: {}", matchedKF.first->mnId, matchedKF.second);
                 }
             }
         }

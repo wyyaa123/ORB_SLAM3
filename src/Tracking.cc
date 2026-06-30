@@ -27,6 +27,7 @@
 #include "KannalaBrandt8.h"
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
+#include "edgeMatcher.h"
 
 #include <iostream>
 
@@ -645,8 +646,6 @@ namespace ORB_SLAM3
         mpImuCalib = new IMU::Calib(Tbc, Ng * sf, Na * sf, Ngw / sf, Naw / sf);
 
         mpImuPreintegratedFromLastKF = new IMU::Preintegrated(IMU::Bias(), *mpImuCalib);
-
-        
     }
 
     bool Tracking::ParseCamParamFile(cv::FileStorage &fSettings)
@@ -1805,7 +1804,8 @@ namespace ORB_SLAM3
         // 没有上一帧，不能预测
         if (!mCurrentFrame.mpPrevFrame)
         {
-            Verbose::PrintMess("No last frame", Verbose::VERBOSITY_NORMAL);
+            // Verbose::PrintMess("No last frame", Verbose::VERBOSITY_NORMAL);
+            spdlog::debug("No last frame");
             return false;
         }
 
@@ -1907,7 +1907,8 @@ namespace ORB_SLAM3
 
                     if (mpAtlas->isImuInitialized())
                     {
-                        cout << "Timestamp jump detected. State set to LOST. Reseting IMU integration..." << endl;
+                        // cout << "Timestamp jump detected. State set to LOST. Reseting IMU integration..." << endl;
+                        spdlog::info("Timestamp jump detected. State set to LOST. Reseting IMU integration...");
                         if (!pCurrentMap->GetIniertialBA2())
                         {
                             mpSystem->ResetActiveMap();
@@ -1919,7 +1920,8 @@ namespace ORB_SLAM3
                     }
                     else
                     {
-                        cout << "Timestamp jump detected, before IMU initialization. Reseting..." << endl;
+                        // cout << "Timestamp jump detected, before IMU initialization. Reseting..." << endl;
+                        spdlog::info("Timestamp jump detected, before IMU initialization. Reseting...");
                         mpSystem->ResetActiveMap();
                     }
                     return;
@@ -2022,12 +2024,14 @@ namespace ORB_SLAM3
                     // mnLastRelocFrameId 上一次重定位的那一帧
                     if ((!mbVelocity && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId < mnLastRelocFrameId + 2)
                     {
-                        Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
+                        // Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
+                        spdlog::debug("TRACK: Track with respect to the reference KF");
                         bOK = TrackReferenceKeyFrame();
                     }
                     else
                     {
-                        Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
+                        // Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
+                        spdlog::debug("TRACK: Track with motion model");
                         // 用恒速模型跟踪。所谓的恒速就是假设上上帧到上一帧的位姿=上一帧的位姿到当前帧位姿
                         // 根据恒速模型设定当前帧的初始位姿，用最近的普通帧来跟踪当前的普通帧
                         // 通过投影的方式在参考帧中找当前帧特征点的匹配点，优化每个特征点所对应3D点的投影误差即可得到位姿
@@ -2061,7 +2065,8 @@ namespace ORB_SLAM3
                     // 如果跟丢了，先判断是短暂跟丢还是完全跟丢。短暂跟丢的话，先用IMU预测位姿，如果IMU预测的位姿不可靠或者时间超过阈值了，就认为完全跟丢了；完全跟丢了的话，直接重置地图或者重定位。
                     if (mState == RECENTLY_LOST)
                     {
-                        Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
+                        // Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
+                        spdlog::warn("Lost for a short time");
 
                         bOK = true;
                         if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
@@ -2074,7 +2079,8 @@ namespace ORB_SLAM3
                             if (mCurrentFrame.mTimeStamp - mTimeStampLost > time_recently_lost)
                             {
                                 mState = LOST;
-                                Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
+                                // Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
+                                spdlog::warn("Track Lost...");
                                 bOK = false;
                             }
                         }
@@ -2095,12 +2101,14 @@ namespace ORB_SLAM3
                     else if (mState == LOST)
                     {
 
-                        Verbose::PrintMess("A new map is started...", Verbose::VERBOSITY_NORMAL);
+                        // Verbose::PrintMess("A new map is started...", Verbose::VERBOSITY_NORMAL);
+                        spdlog::warn("A new map is started...");
 
                         if (pCurrentMap->KeyFramesInMap() < 10)
                         {
                             mpSystem->ResetActiveMap();
-                            Verbose::PrintMess("Reseting current map...", Verbose::VERBOSITY_NORMAL);
+                            // Verbose::PrintMess("Reseting current map...", Verbose::VERBOSITY_NORMAL);
+                            spdlog::warn("Reseting current map...");
                         }
                         else
                             CreateMapInAtlas();
@@ -2108,7 +2116,8 @@ namespace ORB_SLAM3
                         if (mpLastKeyFrame)
                             mpLastKeyFrame = static_cast<KeyFrame *>(NULL);
 
-                        Verbose::PrintMess("done", Verbose::VERBOSITY_NORMAL);
+                        // Verbose::PrintMess("done", Verbose::VERBOSITY_NORMAL);
+                        spdlog::warn("done");
 
                         return;
                     }
@@ -2207,7 +2216,8 @@ namespace ORB_SLAM3
                     bOK = TrackLocalMap();
                 }
                 if (!bOK)
-                    cout << "Fail to track local map!" << endl;
+                    // cout << "Fail to track local map!" << endl;
+                    spdlog::warn("Fail to track local map!");
             }
             else
             {
@@ -2417,13 +2427,15 @@ namespace ORB_SLAM3
             {
                 if (!mCurrentFrame.mpImuPreintegrated || !mLastFrame.mpImuPreintegrated)
                 {
-                    cout << "not IMU meas" << endl;
+                    // cout << "not IMU meas" << endl;
+                    spdlog::warn("not IMU meas");
                     return;
                 }
 
                 if (!mFastInit && (mCurrentFrame.mpImuPreintegratedFrame->avgA - mLastFrame.mpImuPreintegratedFrame->avgA).norm() < 0.5)
                 {
-                    cout << "not enough acceleration" << endl;
+                    // cout << "not enough acceleration" << endl;
+                    spdlog::warn("not enough acceleration");
                     return;
                 }
 
@@ -2501,7 +2513,8 @@ namespace ORB_SLAM3
                 }
             }
 
-            Verbose::PrintMess("New Map created with " + to_string(mpAtlas->MapPointsInMap()) + " points", Verbose::VERBOSITY_QUIET);
+            // Verbose::PrintMess("New Map created with " + to_string(mpAtlas->MapPointsInMap()) + " points", Verbose::VERBOSITY_QUIET);
+            spdlog::info("New Map created with {} points", mpAtlas->MapPointsInMap());
 
             // cout << "Active map: " << mpAtlas->GetCurrentMap()->GetId() << endl;
 
@@ -2653,7 +2666,8 @@ namespace ORB_SLAM3
         sMPs = pKFini->GetMapPoints();
 
         // Bundle Adjustment
-        Verbose::PrintMess("New Map created with " + to_string(mpAtlas->MapPointsInMap()) + " points", Verbose::VERBOSITY_QUIET);
+        // Verbose::PrintMess("New Map created with " + to_string(mpAtlas->MapPointsInMap()) + " points", Verbose::VERBOSITY_QUIET);
+        spdlog::info("New Map created with {} points", mpAtlas->MapPointsInMap());
         Optimizer::GlobalBundleAdjustemnt(mpAtlas->GetCurrentMap(), 20);
 
         float medianDepth = pKFini->ComputeSceneMedianDepth(2);
@@ -2863,9 +2877,10 @@ namespace ORB_SLAM3
         mLastFrame.SetPose(Tlr * pRef->GetPose()); // T_c_r * T_r_w = T_c_w
 
         // spdlog::info("judgement");
+        // 如果上一帧为关键帧，或者单目的情况，则退出
         if (mnLastKeyFrameId == mLastFrame.mnId || mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR || !mbOnlyTracking)
         {
-            // spdlog::info("Skipping last frame update");
+            spdlog::debug("Skipping last frame update");
             return;
         }
 
@@ -2877,7 +2892,7 @@ namespace ORB_SLAM3
         for (int i = 0; i < Nfeat; i++)
         {
             float z = mLastFrame.mvDepth[i];
-            if (z > 0)
+            if (z > 0 && z < 10)
             {
                 vDepthIdx.push_back(make_pair(z, i));
             }
@@ -2937,6 +2952,7 @@ namespace ORB_SLAM3
     bool Tracking::TrackWithMotionModel()
     {
         ORBmatcher matcher(0.9, true);
+        EdgeMatcher edgeMatcher(0.9);
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
@@ -2946,13 +2962,13 @@ namespace ORB_SLAM3
         if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
         {
             // Predict state with IMU if it is initialized and it doesnt need reset
-            // spdlog::info("Predicting state with IMU");
+            spdlog::debug("Predicting state with IMU");
             PredictStateIMU();
             return true;
         }
         else
         {
-            // spdlog::info("Predicting state with constant velocity model");
+            spdlog::debug("Predicting state with constant velocity model");
             mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
         }
 
@@ -3030,6 +3046,21 @@ namespace ORB_SLAM3
             return nmatchesMap >= 10;
     }
 
+    /**
+     * @brief 用局部地图进行跟踪，进一步优化位姿
+     *
+     * 1. 更新局部地图，包括局部关键帧和关键点
+     * 2. 对局部MapPoints进行投影匹配
+     * 3. 根据匹配对估计当前帧的姿态
+     * 4. 根据姿态剔除误匹配
+     * @return true if success
+     *
+     * Step 1：更新局部关键帧mvpLocalKeyFrames和局部地图点mvpLocalMapPoints
+     * Step 2：在局部地图中查找与当前帧匹配的MapPoints, 其实也就是对局部地图点进行跟踪
+     * Step 3：更新局部所有MapPoints后对位姿再次优化
+     * Step 4：更新当前帧的MapPoints被观测程度，并统计跟踪局部地图的效果
+     * Step 5：决定是否跟踪成功
+     */
     bool Tracking::TrackLocalMap()
     {
 

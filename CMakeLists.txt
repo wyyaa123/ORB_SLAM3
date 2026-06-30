@@ -3,9 +3,8 @@ project(ORB_SLAM3)
 
 # SET(CMAKE_BUILD_TYPE Debug)
 
-
 IF(NOT CMAKE_BUILD_TYPE)
-  SET(CMAKE_BUILD_TYPE Release)
+    SET(CMAKE_BUILD_TYPE Release)
 ENDIF()
 
 MESSAGE("Build type: " ${CMAKE_BUILD_TYPE})
@@ -73,6 +72,7 @@ src/ORBmatcher.cc
 src/FrameDrawer.cc
 src/Converter.cc
 src/MapPoint.cc
+src/MapEdge.cpp
 src/KeyFrame.cc
 src/Atlas.cc
 src/Map.cc
@@ -96,6 +96,8 @@ src/edge.cpp
 src/edgeCluster.cpp
 src/Logger.cpp
 src/bezierCurve.cpp
+src/edgeMatcher.cpp
+src/edgeExtracter.cpp
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -105,6 +107,7 @@ include/ORBmatcher.h
 include/FrameDrawer.h
 include/Converter.h
 include/MapPoint.h
+include/MapEdge.h
 include/KeyFrame.h
 include/Atlas.h
 include/Map.h
@@ -130,7 +133,9 @@ include/edge.h
 include/edgeCluster.h
 include/patch.h
 include/Logger.h
-include/bezierCurve.h)
+include/bezierCurve.h
+include/edgeMatcher.h
+include/edgeExtracter.h)
 
 add_subdirectory(Thirdparty/g2o)
 

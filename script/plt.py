@@ -30,7 +30,7 @@ def show_image(image_path, cmap=None, save_path=None):
 
 def main():
 	parser = argparse.ArgumentParser(description="Display image with matplotlib")
-	parser.add_argument("--image", default="datasets/Real/D435I/2026-04-24-08-20-35/camera_infra1_semantic/merged/1777018836126185656.png", help="Path to input image")
+	parser.add_argument("--image", default="/home/wyyaa123/sam3/merge/1780046179846407652.png", help="Path to input image")
 	parser.add_argument("--cmap", default=None, help="Colormap for grayscale/depth image")
 	parser.add_argument("--save", default=None, help="Optional path to save plotted figure")
 	args = parser.parse_args()

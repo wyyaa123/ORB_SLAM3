@@ -28,6 +28,7 @@
 #include "bezierCurve.h"
 
 #include <cmath>
+#include <iterator>
 #include <thread>
 #include <tbb/parallel_for.h>
 #include <CameraModels/Pinhole.h>
@@ -70,8 +71,8 @@ namespace ORB_SLAM3
           mpCamera(frame.mpCamera), mpCamera2(frame.mpCamera2), Nleft(frame.Nleft), Nright(frame.Nright),
           monoLeft(frame.monoLeft), monoRight(frame.monoRight), mvLeftToRightMatch(frame.mvLeftToRightMatch),
           mvRightToLeftMatch(frame.mvRightToLeftMatch), mvStereo3Dpoints(frame.mvStereo3Dpoints),
-          mTlr(frame.mTlr), mRlr(frame.mRlr), mtlr(frame.mtlr), mTrl(frame.mTrl),
-          mvEdges(frame.mvEdges), mBeziers(frame.mBeziers), mBezierCameraPoints(frame.mBezierCameraPoints),
+          mTlr(frame.mTlr), mRlr(frame.mRlr), mtlr(frame.mtlr), mTrl(frame.mTrl), mImgLeft(frame.mImgLeft.clone()),
+          mvEdges(frame.mvEdges), mvBezierCurves(frame.mvBezierCurves),
           mTcw(frame.mTcw), mbHasPose(false), mbHasVelocity(false)
     {
         for (int i = 0; i < FRAME_GRID_COLS; i++)
@@ -309,36 +310,7 @@ namespace ORB_SLAM3
         mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
 
         // Edge extraction
-        cv::Canny(imGray, mCanny, 50, 150, 3, true);
-
-        cv::Mat grad_x, grad_y;
-        cv::Scharr(imGray, grad_x, CV_32F, 1, 0);
-        cv::Scharr(imGray, grad_y, CV_32F, 0, 1);
-
-        mMatGradMagnitude.create(imGray.size(), CV_32F);
-        mMatGradAngle.create(imGray.size(), CV_32F);
-
-        cv::cartToPolar(grad_x, grad_y, mMatGradMagnitude, mMatGradAngle, true);
-
-        preprocessSem();
-
-        preprocessEdge();
-
-        regionGrowthClusteringOCanny(20.0f);
-
-        cvt2OrderedEdges();
-
-        // getFineSampledPoints(edgeSampleSize);
-
-        // assignProperty3D(imDepth);
-
-        // edgeCullingDepth();
-
-        const BezierCurveFitter bezierFitter(3);
-        for (auto &edge : mvEdges)
-            mBeziers[edge.edge_ID] = bezierFitter.fitAdaptive(edge.mvPoints);
-
-        buildBezierCameraPoints(imDepth);
+        ExtractEdge(1, 20.0, 50.0, 150.0); // Example parameters for Canny edge detection
 
         // ORB extraction
 #ifdef REGISTER_TIMES
@@ -538,122 +510,6 @@ namespace ORB_SLAM3
         }
     }
 
-    void Frame::preprocessSem()
-    {
-        cv::Mat filteredSem = cv::Mat::zeros(mImgSem.size(), CV_8UC1);
-        for (int i = 1; i < 10; ++i)
-        {
-            cv::Mat temp = cv::Mat::zeros(mImgSem.size(), CV_8UC1);
-            temp.setTo(255, mImgSem == i);
-
-            if (cv::countNonZero(temp) == 0)
-                continue;
-
-            cv::Mat label, stats, centroids;
-            cv::connectedComponentsWithStats(temp, label, stats, centroids, 4, CV_16U);
-
-            for (int j = 1; j < centroids.rows; j++)
-            {
-                int area = stats.at<int>(j, cv::CC_STAT_AREA);
-                int top = stats.at<int>(j, cv::CC_STAT_TOP);
-                int left = stats.at<int>(j, cv::CC_STAT_LEFT);
-                int width = stats.at<int>(j, cv::CC_STAT_WIDTH);
-                int height = stats.at<int>(j, cv::CC_STAT_HEIGHT);
-
-                if (area < 100)
-                    continue;
-
-                double WHratio = std::max(width, height) / std::min(width, height);
-                if (WHratio > 10)
-                    continue;
-
-                cv::Mat mask = cv::Mat::zeros(mImgSem.size(), CV_8UC1);
-                mask = mask.setTo(255, label == j);
-
-                cv::Mat close_kernel = cv::Mat::ones(5, 5, CV_8UC1);
-                cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, close_kernel);
-
-                cv::Mat open_kernel = cv::Mat::ones(5, 5, CV_8UC1);
-                cv::morphologyEx(mask, mask, cv::MORPH_OPEN, open_kernel);
-
-                int dilationSize = 2;
-                cv::Mat dilationElement = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2 * dilationSize + 1, 2 * dilationSize + 1), cv::Point(dilationSize, dilationSize));
-                cv::dilate(mask, mask, dilationElement);
-
-                filteredSem.setTo(i, mask);
-            }
-        }
-        mImgSem = filteredSem;
-    }
-
-    void Frame::buildBezierCameraPoints(const cv::Mat &matDepth)
-    {
-        mBezierCameraPoints.clear();
-
-        if (matDepth.empty() || matDepth.type() != CV_32F || mBeziers.empty())
-            return;
-
-        BezierCurveFitter bezierEvaluator;
-        const int sampleCount = 40;
-        const float minDepth = 0.02f;
-        const float maxDepth = 5.0f;
-
-        for (const Edge &edge : mvEdges)
-        {
-            auto bezierIt = mBeziers.find(edge.edge_ID);
-            if (bezierIt == mBeziers.end())
-                continue;
-
-            std::vector<std::vector<Eigen::Vector3f>> edgeCameraCurves;
-
-            for (const std::vector<orderedEdgePoint> &controlPoints : bezierIt->second)
-            {
-                if (controlPoints.size() < 2)
-                    continue;
-
-                std::vector<Eigen::Vector3f> currentSegment;
-                currentSegment.reserve(sampleCount + 1);
-
-                for (int k = 0; k <= sampleCount; ++k)
-                {
-                    const double t = static_cast<double>(k) / static_cast<double>(sampleCount);
-                    const orderedEdgePoint point2D = bezierEvaluator.evaluate(controlPoints, t);
-                    const int u = cvRound(point2D.x);
-                    const int v = cvRound(point2D.y);
-
-                    if (u < 0 || u >= matDepth.cols || v < 0 || v >= matDepth.rows)
-                    {
-                        if (currentSegment.size() >= 2)
-                            edgeCameraCurves.push_back(currentSegment);
-                        currentSegment.clear();
-                        continue;
-                    }
-
-                    const float depth = matDepth.at<float>(v, u);
-                    if (depth <= minDepth || depth >= maxDepth || !std::isfinite(depth))
-                    {
-                        if (currentSegment.size() >= 2)
-                            edgeCameraCurves.push_back(currentSegment);
-                        currentSegment.clear();
-                        continue;
-                    }
-
-                    Eigen::Vector3f pc;
-                    pc.x() = (static_cast<float>(u) - cx) * invfx * depth;
-                    pc.y() = (static_cast<float>(v) - cy) * invfy * depth;
-                    pc.z() = depth;
-                    currentSegment.push_back(pc);
-                }
-
-                if (currentSegment.size() >= 2)
-                    edgeCameraCurves.push_back(currentSegment);
-            }
-
-            if (!edgeCameraCurves.empty())
-                mBezierCameraPoints[edge.edge_ID] = std::move(edgeCameraCurves);
-        }
-    }
-
     void Frame::ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1)
     {
         vector<int> vLapping = {x0, x1};
@@ -661,6 +517,21 @@ namespace ORB_SLAM3
             monoLeft = (*mpORBextractorLeft)(im, cv::Mat(), mvKeys, mDescriptors, vLapping);
         else
             monoRight = (*mpORBextractorRight)(im, cv::Mat(), mvKeysRight, mDescriptorsRight, vLapping);
+    }
+
+    void Frame::ExtractEdge(int flag, double _angleThreshold, double _threshold1, double _threshold2)
+    {
+        cv::Mat tempSem = flag ? mImgSem : cv::Mat();
+
+        edgeExtracter edgeExtractor(_angleThreshold, _threshold1, _threshold2);
+        mvBezierCurves = edgeExtractor(mImgLeft, tempSem);
+        mvEdges = edgeExtractor.getEdges();
+
+        assignProperty3D();
+
+        BezierCullingDepth();
+
+        constructSearchPlain();
     }
 
     bool Frame::isSet() const
@@ -1504,198 +1375,45 @@ namespace ORB_SLAM3
         return mRwc * mvStereo3Dpoints[i] + mOw;
     }
 
-    void Frame::preprocessEdge()
+    void Frame::assignProperty3D()
     {
-        for (int i = 0; i < mCanny.rows; ++i)
-        {
-            uint8_t *current = mCanny.ptr<uint8_t>(i);
-            uint8_t *above = i > 0 ? mCanny.ptr<uint8_t>(i - 1) : nullptr;
-            uint8_t *below = i < mCanny.rows - 1 ? mCanny.ptr<uint8_t>(i + 1) : nullptr;
+        if (mImgDepth.empty() || mImgDepth.type() != CV_32F)
+            return;
 
-            for (int j = 0; j < mCanny.cols; ++j)
+        for (BezierCurve &curve : mvBezierCurves)
+        {
+            for (size_t i = 0; i < curve.controlPoints.size(); ++i)
             {
-                if (current[j] == 0)
-                    continue; // 跳过非边缘点
-
-                int left = j > 0 ? current[j - 1] : 0;
-                int right = j < mCanny.cols - 1 ? current[j + 1] : 0;
-                int up = above ? above[j] : 0;
-                int down = below ? below[j] : 0;
-
-                bool connected = (left > 0 && up > 0) || (right > 0 && up > 0) ||
-                                 (left > 0 && down > 0) || (right > 0 && down > 0);
-
-                if (connected)
-                {
-                    current[j] = 0;
-                }
+                orderedEdgePoint &point = curve.controlPoints[i];
+                assignProperty3DEach(point);
             }
-        }
-    }
 
-    void Frame::regionGrowthClusteringOCanny(float angle_Thres, const cv::Point &offset)
-    {
-        //-- 判断有没有遍历到当前点的矩阵 0 表示没有遍历到，1 表示遍历到
-        cv::Mat visitedMat(mCanny.rows, mCanny.cols, CV_8UC1, cv::Scalar::all(0));
-        //-- 清空edgemvEdgeClusters
-        mvEdgeClusters.clear();
-
-        //-- 预定义图像的指针
-        uint8_t *canny_ptr = mCanny.data;
-        uint8_t *sem_ptr = mImgSem.data;
-        uint8_t *visited_ptr = visitedMat.data;
-        const float *angle_ptr = mMatGradAngle.ptr<float>();
-        const int canny_step = static_cast<int>(mCanny.step);
-        const int sem_step = static_cast<int>(mImgSem.step);
-        const int visited_step = static_cast<int>(visitedMat.step);
-        const int angle_step = static_cast<int>(mMatGradAngle.step / sizeof(float));
-        const int width = mCanny.cols;
-        const int height = mCanny.rows;
-
-        static const int kDx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
-        static const int kDy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
-
-        for (int y = 0; y < height; ++y)
-        {
-            for (int x = 0; x < width; ++x)
+            for (size_t i = 0; i < curve.sampledPoints.size(); ++i)
             {
-                if (visited_ptr[y * visited_step + x] != 0 || canny_ptr[y * canny_step + x] != 255 || sem_ptr[y * sem_step + x] == 0)
-                    continue;
-
-                std::vector<edgePoint> current_cluster;
-                current_cluster.reserve(128);
-                visited_ptr[y * visited_step + x] = 1;
-                int point_id = 0;
-                int cls = sem_ptr[y * sem_step + x];
-
-                edgePoint curr_edge_point(cv::Point(x, y), point_id, -1, cls);
-                curr_edge_point.isRoot = true;
-                point_id++;
-
-                std::vector<edgePoint> open_list;
-                open_list.reserve(256);
-                open_list.push_back(curr_edge_point);
-                size_t head = 0;
-
-                while (head < open_list.size())
-                {
-                    const edgePoint current_point = open_list[head++];
-
-                    const int cx = current_point.pixel.x;
-                    const int cy = current_point.pixel.y;
-
-                    current_cluster.push_back(current_point);
-
-                    const float curr_angle = angle_ptr[(cy + offset.y) * angle_step + (cx + offset.x)];
-
-                    for (int k = 0; k < 8; ++k)
-                    {
-                        const int nx = cx + kDx[k];
-                        const int ny = cy + kDy[k];
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height || sem_ptr[ny * sem_step + nx] != cls)
-                        {
-                            continue;
-                        }
-
-                        const int visited_idx = ny * visited_step + nx;
-                        if (visited_ptr[visited_idx] != 0)
-                        {
-                            continue;
-                        }
-
-                        if (canny_ptr[ny * canny_step + nx] != 255)
-                        {
-                            continue;
-                        }
-
-                        const float neigh_angle = angle_ptr[(ny + offset.y) * angle_step + (nx + offset.x)];
-
-                        float angle_bias = calcAngleBias(neigh_angle, curr_angle);
-                        if (angle_bias >= angle_Thres)
-                        {
-                            continue;
-                        }
-
-                        visited_ptr[visited_idx] = 1;
-                        open_list.emplace_back(cv::Point(nx, ny), point_id, current_point.point_id, cls);
-                        point_id++;
-                    }
-                }
-
-                if (current_cluster.size() > 10)
-                {
-                    mvEdgeClusters.emplace_back(std::move(current_cluster));
-                }
+                orderedEdgePoint &point = curve.sampledPoints[i];
+                point.frame_edge_ID = curve.edge_ID;
+                point.frame_point_index = static_cast<int>(i);
+                assignProperty3DEach(point);
             }
         }
     }
 
-    void Frame::getFineSampledPoints(int bias)
+    void Frame::assignProperty3DEach(orderedEdgePoint &pt)
     {
-        for (int i = 0; i < mvEdges.size(); ++i)
+        int x_idx = cvRound(pt.x);
+        int y_idx = cvRound(pt.y);
+
+        if (x_idx < 0 || x_idx >= mImgDepth.cols || y_idx < 0 || y_idx >= mImgDepth.rows)
         {
-            Edge &edge = mvEdges[i];
-            edge.samplingEdgeUniform(bias);
+            pt.depth = 0;
+            pt.score_depth = 0;
+            return;
         }
-    }
 
-    void Frame::cvt2OrderedEdges()
-    {
-        // 预分配 mvEdges 内存（减少动态扩容开销）
-        mvEdges.reserve(mvEdgeClusters.size());
+        float depth_orig = mImgDepth.at<float>(y_idx, x_idx);
 
-        // 提前获取 mMatGradAngle 的指针（避免重复调用 at<>）
-        const float *angle_ptr = mMatGradAngle.ptr<float>(0);
-        const int angle_step = mMatGradAngle.step / sizeof(float);
-
-        for (int i = 0; i < mvEdgeClusters.size(); ++i)
-        {
-            Edge curr_edge(i);
-            const auto &cluster_points = mvEdgeClusters[i].organize();
-            ;
-            curr_edge.mvPoints.reserve(cluster_points.size());
-
-            for (const auto &point : cluster_points)
-            { // 范围 for 循环更高效
-                const int x = static_cast<int>(point.pixel.x);
-                const int y = static_cast<int>(point.pixel.y);
-
-                // angle(0~360) of the image gradient
-                const float angle = angle_ptr[y * angle_step + x];
-
-                // an orderedEdgePoint is initially constructed by coordinate (x,y) and gradient angle
-                curr_edge.mvPoints.emplace_back(x, y, angle);
-            }
-            curr_edge.cls = cluster_points.front().cls; // 直接取第一个点的语义类别作为边缘的类别
-            mvEdges.push_back(std::move(curr_edge));    // 移动语义减少拷贝
-        }
-    }
-
-    /**
-     * @brief 并行地为所有边缘点分配 3D 信息和深度分数。
-     *
-     * @param matDepth 原始深度图
-     */
-    void Frame::assignProperty3D(const cv::Mat &matDepth)
-    {
-        for (int i = 0; i < mvEdges.size(); ++i)
-        {
-            for (int j = 0; j < mvEdges[i].mvPoints.size(); ++j)
-                assignProperty3DEach(mvEdges[i].mvPoints[j], matDepth);
-        }
-    }
-
-    void Frame::assignProperty3DEach(orderedEdgePoint &pt, const cv::Mat &matDepth)
-    {
-        int x_idx = pt.x;
-        int y_idx = pt.y;
-
-        //-- 原本点的真实深度
-        float depth_orig = matDepth.at<float>(y_idx, x_idx);
-
-        //-- 在5x5的patch中计算修正深度以及可见性分数
-        std::vector<float> validDepthList; //-- 所有深度不为0的点的深度列表
-        int patch_total = 0;               //-- 当前的patch一共有多少像素
+        std::vector<float> validDepthList;
+        int patch_total = 0;
         for (int x_bias = -2; x_bias <= 2; ++x_bias)
         {
             for (int y_bias = -2; y_bias <= 2; ++y_bias)
@@ -1703,41 +1421,36 @@ namespace ORB_SLAM3
                 int curr_x_idx = x_idx + x_bias;
                 int curr_y_idx = y_idx + y_bias;
 
-                //-- 判断该位置在不在图像区域里
                 if (curr_x_idx < mnMinX || curr_x_idx >= mnMaxX || curr_y_idx < mnMinY || curr_y_idx >= mnMaxY)
                     continue;
 
-                patch_total += 1; //-- 累积总体像素
-                //-- 在图像区域里的话判断深度值是否有效
-                float depth = matDepth.at<float>(curr_y_idx, curr_x_idx);
-                if (depth > 0.02)
+                patch_total += 1;
+                float depth = mImgDepth.at<float>(curr_y_idx, curr_x_idx);
+                if (depth > 0.02 && depth < 5.0)
                     validDepthList.push_back(depth);
             }
         }
-        std::sort(validDepthList.begin(), validDepthList.end()); //-- 从小到大排序
+        std::sort(validDepthList.begin(), validDepthList.end());
         int size = validDepthList.size();
-        float adjusted_depth = 0; //-- 矫正后的深度
+        float adjusted_depth = 0;
 
-        //-- 计算前景深度
         if (size >= 8)
         {
-            //-- 检查跳变并返回第一组连续数据
             std::vector<size_t> jump_indices;
             float rel_thres = 0.05;
             for (size_t i = 1; i < validDepthList.size(); ++i)
             {
                 float dx = validDepthList[i] - validDepthList[i - 1];
                 float x = validDepthList[i - 1];
-                float relative_change = dx / x; // validDepthList 中均为大于0的数，不担心除0
+                float relative_change = dx / x;
 
                 if (std::fabs(relative_change) > rel_thres)
                 {
-                    jump_indices.push_back(i); // 记录跳变位置
+                    jump_indices.push_back(i);
                     break;
                 }
             }
 
-            //-- 如果一个 patch 内深度值有不连续，则抠出最小的那一部分区域
             std::vector<float> adjustDepthList;
             if (jump_indices.empty())
             {
@@ -1750,36 +1463,26 @@ namespace ORB_SLAM3
             }
 
             int partitionSize = adjustDepthList.size();
-            //-- 取最小的部分的深度的中位数作为深度值
             float medianValue = (partitionSize % 2 == 0) ? (adjustDepthList[partitionSize / 2 - 1] + adjustDepthList[partitionSize / 2]) / 2.0 : adjustDepthList[partitionSize / 2];
             if (depth_orig >= adjustDepthList.front() && depth_orig <= adjustDepthList.back())
             {
-                //-- 如果真实深度在这个区间之间，就取真实深度（真实深度本身是前景）
                 adjusted_depth = depth_orig;
             }
             else
             {
-                //-- 如果真实深度不在前景区间，则修改深度为前景区间
                 adjusted_depth = medianValue;
             }
         }
 
-        pt.depth = adjusted_depth; //-- 为点特征的深度进行赋值
+        pt.depth = adjusted_depth;
 
-        //-- 计算远近分数
-        if (pt.depth > 0.02)
+        if (pt.depth > 0.02 && pt.depth < 5.0)
         {
-            Eigen::Vector3d pt_3d;
-            pt_3d.x() = (pt.x - cx) / fx * pt.depth;
-            pt_3d.y() = (pt.y - cy) / fy * pt.depth;
-            pt_3d.z() = pt.depth;
-            double range = pt_3d.norm();
-            //-- 使用反sigmoid函数计算远近分数
+            pt.x_3d = (pt.x - cx) / fx * pt.depth;
+            pt.y_3d = (pt.y - cy) / fy * pt.depth;
+            pt.z_3d = pt.depth;
+            double range = std::sqrt(pt.x_3d * pt.x_3d + pt.y_3d * pt.y_3d + pt.z_3d * pt.z_3d);
             pt.score_depth = 1.0 / (std::exp((range - 2.5) * 1.0) + 1);
-            //-- 更新类中的3D点
-            pt.x_3d = pt_3d.x();
-            pt.y_3d = pt_3d.y();
-            pt.z_3d = pt_3d.z();
         }
         else
         {
@@ -1787,85 +1490,60 @@ namespace ORB_SLAM3
         }
     }
 
-    void Frame::edgeCullingDepth()
+    void Frame::BezierCullingDepth()
     {
-        //-- 遍历所有的边缘，祛除深度大量无效的边缘
-        for (auto edgeIter = mvEdges.begin(); edgeIter != mvEdges.end();)
+        const float minDepth = 0.02f;
+        const float maxDepth = 5.0f;
+        const float minValidRatio = 0.3f;
+
+        for (auto curveIter = mvBezierCurves.begin(); curveIter != mvBezierCurves.end();)
         {
-            //-- 获取当前边缘的引用，避免拷贝
-            Edge &currentEdge = *edgeIter;
+            BezierCurve &curve = *curveIter;
+            const int totalPointCount = static_cast<int>(curve.sampledPoints.size());
 
-            int validPointCount = 0;
-            int totalPointCount = currentEdge.mvPoints.size();
-
-            //-- 先统计有效点的数量
-            for (const auto &point : currentEdge.mvPoints)
+            if (totalPointCount < 2)
             {
-                if (point.depth > 0.02f && point.depth < 5.0f)
-                {
-                    validPointCount++;
-                }
-            }
-
-            //-- 计算有效点比例
-            float validRatio = static_cast<float>(validPointCount) / totalPointCount;
-
-            if (validRatio >= 0.3f)
-            {
-                //-- 如果边缘保留，则移除其中的无效点
-                auto newEnd = std::remove_if(currentEdge.mvPoints.begin(), currentEdge.mvPoints.end(), [](const auto &point)
-                                             { return point.depth <= 0.2f || point.depth >= 12.0f; });
-                currentEdge.mvPoints.erase(newEnd, currentEdge.mvPoints.end());
-                edgeIter++; // 保留这个边缘，移动到下一个
-            }
-            else
-            {
-                //-- 如果边缘无效（70%以上都是无效点），则移除整个边缘
-                edgeIter = mvEdges.erase(edgeIter);
-            }
-        }
-    }
-
-    void Frame::assignPropertyIdx()
-    {
-        //-- 根据edges的ID构造ID与索引的映射
-        for (size_t i = 0; i < mvEdges.size(); ++i)
-        {
-            //-- 更新edge_id与edge在mvEdges中的index的映射关系
-            const int edge_id = mvEdges[i].edge_ID;
-
-            if (mmIndexMap.find(edge_id) != mmIndexMap.end())
-            {
-                std::cout << "\033[31m"
-                          << "[ERROR]"
-                          << "\033[0m"
-                          << " WRONG EDGE POINT INDEX " << edge_id << ", INDICES SHOULD BE DIFFERENT!" << std::endl;
+                curveIter = mvBezierCurves.erase(curveIter);
                 continue;
             }
-            else
+
+            int validPointCount = 0;
+            for (const orderedEdgePoint &point : curve.sampledPoints)
             {
-                mmIndexMap[edge_id] = i;
+                if (point.depth > minDepth && point.depth < maxDepth)
+                    validPointCount++;
             }
 
-            auto &edge = mvEdges[i];
+            const float validRatio = static_cast<float>(validPointCount) / static_cast<float>(totalPointCount);
 
-            //-- 对于边缘中的每个边缘点，更新其对帧中所有边缘的索引
-            for (int j = 0; j < edge.mvPoints.size(); ++j)
+            if (validRatio < minValidRatio)
             {
-                auto &point = edge.mvPoints[j];
-                //-- 更新边缘id索引
-                point.frame_edge_ID = edge_id;
-                //-- 更新边缘点列表索引
-                point.frame_point_index = static_cast<int>(j);
+                curveIter = mvBezierCurves.erase(curveIter);
+                continue;
             }
+
+            auto newEnd = std::remove_if(curve.sampledPoints.begin(), curve.sampledPoints.end(),
+                                         [minDepth, maxDepth](const orderedEdgePoint &point)
+                                         { return point.depth <= minDepth || point.depth >= maxDepth; });
+            curve.sampledPoints.erase(newEnd, curve.sampledPoints.end());
+
+            if (curve.sampledPoints.size() < 2)
+            {
+                curveIter = mvBezierCurves.erase(curveIter);
+                continue;
+            }
+
+            for (size_t i = 0; i < curve.sampledPoints.size(); ++i)
+            {
+                curve.sampledPoints[i].frame_edge_ID = curve.edge_ID;
+                curve.sampledPoints[i].frame_point_index = static_cast<int>(i);
+            }
+
+            NBezier += curve.sampledPoints.size();
+            ++curveIter;
         }
     }
 
-    /**
-     * @brief 构建用于近邻搜索的 2D 阵列（搜索面板）。
-     *
-     * 将所有边缘点的 ID 和索引存储在 cv::Mat 中，方便通过像素坐标快速检索。
-     */
     void Frame::constructSearchPlain()
     {
         // 创建一个 CV_32SC2 类型的 Mat，初始值设为 (-1, -1) 表示无效位置
@@ -1879,12 +1557,12 @@ namespace ORB_SLAM3
                 const auto &point = edge.mvPoints[j];
 
                 // 确保坐标在图像范围内
-                if (point.x >= mnMinX && point.x < mnMaxX && point.y >= mnMinY && point.y < mnMaxY)
+                if (point.x >= 0 && point.x < mImgLeft.cols && point.y >= 0 && point.y < mImgLeft.rows)
                 {
                     // 访问指定位置并赋值
                     auto &pixel = mMatSearch.at<cv::Vec2i>(point.y, point.x);
-                    pixel[0] = point.frame_edge_ID;     // 第一个通道存储 edge ID
-                    pixel[1] = point.frame_point_index; // 第二个通道存储 point index
+                    pixel[0] = edge.edge_ID;     // 第一个通道存储 edge ID
+                    pixel[1] = edge.cls; // 第二个通道存储 point index
                 }
                 else
                 {
@@ -1892,16 +1570,6 @@ namespace ORB_SLAM3
                 }
             }
         }
-    }
 
-    float calcAngleBias(float angle_1, float angle_2)
-    {
-        float res = fabs(angle_1 - angle_2);
-        if (res > 180)
-        {
-            res = 360 - res;
-        }
-        return res;
-    }
-
-} // namespace ORB_SLAM
+    } 
+}// namespace ORB_SLAM

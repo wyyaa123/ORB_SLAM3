@@ -93,9 +93,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Associate RGB, depth, and semantic images by timestamp."
     )
-    parser.add_argument("rgb_dir", default="datasets/Real/D435I/2026-04-24-08-20-35/camera_infra1_image_rect_raw", help="RGB image folder")
-    parser.add_argument("depth_dir", default="datasets/Real/D435I/2026-04-24-08-20-35/depth", help="Depth image folder")
-    parser.add_argument("semantic_dir", default="datasets/Real/D435I/2026-04-24-08-20-35/semantic", help="Semantic image folder (or parent)")
+    parser.add_argument("rgb_dir", default="datasets/Real/D435I/ot/camera_infra1_image_rect_raw", help="RGB image folder")
+    parser.add_argument("depth_dir", default="datasets/Real/D435I/ot/depth", help="Depth image folder")
+    parser.add_argument("semantic_dir", default="datasets/Real/D435I/ot/semantic", help="Semantic image folder (or parent)")
     parser.add_argument(
         "--depth_offset",
         default=0.0,

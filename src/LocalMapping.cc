@@ -19,15 +19,269 @@
 #include "LocalMapping.h"
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
+#include "edgeMatcher.h"
 #include "Optimizer.h"
 #include "Converter.h"
 #include "GeometricTools.h"
+#include "MapEdge.h"
 
 #include <mutex>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <set>
 
 namespace ORB_SLAM3
 {
+
+    namespace
+    {
+        constexpr float kEdgeCenterGate = 0.18f;
+        constexpr float kEdgeMeanDistanceGate = 0.08f;
+        constexpr float kEdgeDirectionCosGate = 0.85f;
+        constexpr float kEdgeLengthRatioGate = 0.55f;
+        constexpr float kEdgeReprojectionGate = 8.0f;
+
+        bool IsValidBezierPoint3D(const orderedEdgePoint &point)
+        {
+            return point.depth > 0.02f && point.depth < 5.0f &&
+                   std::isfinite(point.x_3d) && std::isfinite(point.y_3d) && std::isfinite(point.z_3d);
+        }
+
+        EdgeControlPoints ToWorldEdgePoints(const std::vector<orderedEdgePoint> &points, const Sophus::SE3f &Tcw)
+        {
+            EdgeControlPoints worldPoints;
+            worldPoints.reserve(points.size());
+            const Sophus::SE3f Twc = Tcw.inverse();
+
+            for (const orderedEdgePoint &point : points)
+            {
+                if (!IsValidBezierPoint3D(point))
+                    continue;
+
+                Eigen::Vector3f pc(static_cast<float>(point.x_3d),
+                                   static_cast<float>(point.y_3d),
+                                   static_cast<float>(point.z_3d));
+                worldPoints.push_back(Twc * pc);
+            }
+
+            return worldPoints;
+        }
+
+        Eigen::Vector3f EdgeCenter(const EdgeControlPoints &points)
+        {
+            Eigen::Vector3f center = Eigen::Vector3f::Zero();
+            if (points.empty())
+                return center;
+
+            for (const Eigen::Vector3f &point : points)
+                center += point;
+
+            return center / static_cast<float>(points.size());
+        }
+
+        float EdgeLength(const EdgeControlPoints &points)
+        {
+            if (points.size() < 2)
+                return 0.0f;
+
+            float length = 0.0f;
+            for (size_t i = 1; i < points.size(); ++i)
+                length += (points[i] - points[i - 1]).norm();
+
+            return length;
+        }
+
+        Eigen::Vector3f EdgeDirection(const EdgeControlPoints &points)
+        {
+            if (points.size() < 2)
+                return Eigen::Vector3f::Zero();
+
+            Eigen::Vector3f direction = points.back() - points.front();
+            if (direction.norm() <= std::numeric_limits<float>::epsilon())
+                return Eigen::Vector3f::Zero();
+
+            return direction.normalized();
+        }
+
+        float MeanNearestDistance(const EdgeControlPoints &query, const EdgeControlPoints &reference)
+        {
+            if (query.empty() || reference.empty())
+                return FLT_MAX;
+
+            const size_t stride = std::max<size_t>(1, query.size() / 20);
+            float totalDistance = 0.0f;
+            int count = 0;
+
+            for (size_t i = 0; i < query.size(); i += stride)
+            {
+                float bestDistance = FLT_MAX;
+                for (const Eigen::Vector3f &referencePoint : reference)
+                    bestDistance = std::min(bestDistance, (query[i] - referencePoint).norm());
+
+                totalDistance += bestDistance;
+                count++;
+            }
+
+            return count > 0 ? totalDistance / static_cast<float>(count) : FLT_MAX;
+        }
+
+        std::vector<Eigen::Vector2f> CurveImagePoints(const BezierCurve &curve)
+        {
+            const std::vector<orderedEdgePoint> &points =
+                curve.sampledPoints.size() >= 2 ? curve.sampledPoints : curve.controlPoints;
+
+            std::vector<Eigen::Vector2f> imagePoints;
+            imagePoints.reserve(points.size());
+            for (const orderedEdgePoint &point : points)
+            {
+                if (std::isfinite(point.x) && std::isfinite(point.y))
+                    imagePoints.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
+            }
+
+            return imagePoints;
+        }
+
+        std::vector<Eigen::Vector2f> ProjectMapEdgeToKeyFrame(MapEdge *pME, KeyFrame *pKF,
+                                                              const Sophus::SE3f &Tcw)
+        {
+            std::vector<Eigen::Vector2f> projectedPoints;
+            if (!pME || !pKF || !pKF->mpCamera)
+                return projectedPoints;
+
+            EdgeControlPoints worldPoints = pME->GetWorldSampledPoints();
+            if (worldPoints.size() < 2)
+                worldPoints = pME->GetWorldControlPoints();
+
+            projectedPoints.reserve(worldPoints.size());
+            for (const Eigen::Vector3f &worldPoint : worldPoints)
+            {
+                const Eigen::Vector3f cameraPoint = Tcw * worldPoint;
+                if (!cameraPoint.allFinite() || cameraPoint(2) <= 0.02f)
+                    continue;
+
+                const Eigen::Vector2f uv = pKF->mpCamera->project(cameraPoint);
+                if (!uv.allFinite() || !pKF->IsInImage(uv(0), uv(1)))
+                    continue;
+
+                projectedPoints.push_back(uv);
+            }
+
+            return projectedPoints;
+        }
+
+        float MeanNearestPixelDistance(const std::vector<Eigen::Vector2f> &query,
+                                       const std::vector<Eigen::Vector2f> &reference)
+        {
+            if (query.empty() || reference.empty())
+                return FLT_MAX;
+
+            const size_t stride = std::max<size_t>(1, query.size() / 30);
+            float totalDistance = 0.0f;
+            int count = 0;
+
+            for (size_t i = 0; i < query.size(); i += stride)
+            {
+                float bestSquaredDistance = FLT_MAX;
+                for (const Eigen::Vector2f &referencePoint : reference)
+                    bestSquaredDistance = std::min(bestSquaredDistance,
+                                                   (query[i] - referencePoint).squaredNorm());
+
+                totalDistance += std::sqrt(bestSquaredDistance);
+                count++;
+            }
+
+            return count > 0 ? totalDistance / static_cast<float>(count)
+                             : FLT_MAX;
+        }
+
+        bool SemanticClassCompatible(MapEdge *pME, const BezierCurve &curve)
+        {
+            const int mapClass = pME->GetSemanticClass();
+            return mapClass < 0 || curve.cls < 0 || mapClass == curve.cls;
+        }
+
+        float EdgeMatchScore(MapEdge *pME, const BezierCurve &curve,
+                             const EdgeControlPoints &curveWorldPoints, KeyFrame *pCurrentKF,
+                             const Sophus::SE3f &Tcw)
+        {
+            if (!pME || pME->isBad() || curveWorldPoints.size() < 2 || !SemanticClassCompatible(pME, curve))
+                return FLT_MAX;
+
+            EdgeControlPoints mapPoints = pME->GetWorldSampledPoints();
+            if (mapPoints.size() < 2)
+                mapPoints = pME->GetWorldControlPoints();
+            if (mapPoints.size() < 2)
+                return FLT_MAX;
+
+            const float centerDistance = (EdgeCenter(curveWorldPoints) - EdgeCenter(mapPoints)).norm();
+            if (centerDistance > kEdgeCenterGate)
+                return FLT_MAX;
+
+            const float queryLength = EdgeLength(curveWorldPoints);
+            const float mapLength = EdgeLength(mapPoints);
+            const float maxLength = std::max(queryLength, mapLength);
+            if (maxLength <= FLT_EPSILON)
+                return FLT_MAX;
+
+            const float lengthRatio = std::fabs(queryLength - mapLength) / maxLength;
+            if (lengthRatio > kEdgeLengthRatioGate)
+                return FLT_MAX;
+
+            const Eigen::Vector3f queryDirection = EdgeDirection(curveWorldPoints);
+            const Eigen::Vector3f mapDirection = EdgeDirection(mapPoints);
+            if (queryDirection.norm() > 0.0f && mapDirection.norm() > 0.0f)
+            {
+                const float directionCos = std::fabs(queryDirection.dot(mapDirection));
+                if (directionCos < kEdgeDirectionCosGate)
+                    return FLT_MAX;
+            }
+
+            const float forwardDistance = MeanNearestDistance(curveWorldPoints, mapPoints);
+            const float backwardDistance = MeanNearestDistance(mapPoints, curveWorldPoints);
+            const float meanDistance = 0.5f * (forwardDistance + backwardDistance);
+            if (meanDistance > kEdgeMeanDistanceGate)
+                return FLT_MAX;
+
+            const std::vector<Eigen::Vector2f> curveImagePoints = CurveImagePoints(curve);
+            const std::vector<Eigen::Vector2f> projectedMapPoints =
+                ProjectMapEdgeToKeyFrame(pME, pCurrentKF, Tcw);
+            if (curveImagePoints.size() < 2 || projectedMapPoints.size() < 2)
+                return FLT_MAX;
+
+            const float forwardReprojection =
+                MeanNearestPixelDistance(curveImagePoints, projectedMapPoints);
+            const float backwardReprojection =
+                MeanNearestPixelDistance(projectedMapPoints, curveImagePoints);
+            const float reprojectionError = 0.5f * (forwardReprojection + backwardReprojection);
+            if (reprojectionError > kEdgeReprojectionGate)
+                return FLT_MAX;
+
+            return meanDistance + 0.5f * centerDistance + 0.05f * lengthRatio +
+                   0.005f * reprojectionError;
+        }
+
+        MapEdge *FindMatchingMapEdge(const std::vector<MapEdge *> &mapEdges, const BezierCurve &curve,
+                                     const EdgeControlPoints &curveWorldPoints, KeyFrame *pCurrentKF,
+                                     const Sophus::SE3f &Tcw)
+        {
+            MapEdge *pBestEdge = static_cast<MapEdge *>(NULL);
+            float bestScore = FLT_MAX;
+
+            for (MapEdge *pME : mapEdges)
+            {
+                const float score = EdgeMatchScore(pME, curve, curveWorldPoints, pCurrentKF, Tcw);
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    pBestEdge = pME;
+                }
+            }
+
+            return pBestEdge;
+        }
+    }
 
     LocalMapping::LocalMapping(System *pSys, Atlas *pAtlas, const float bMonocular, bool bInertial, const string &_strSeqName) : mpSystem(pSys), mbMonocular(bMonocular), mbInertial(bInertial), mbResetRequested(false), mbResetRequestedActiveMap(false), mbFinishRequested(false), mbFinished(true), mpAtlas(pAtlas), bInitializing(false),
                                                                                                                                  mbAbortBA(false), mbStopped(false), mbStopRequested(false), mbNotStop(false), mbAcceptKeyFrames(true),
@@ -200,28 +454,32 @@ namespace ORB_SLAM3
                             {
                                 if (mTinit > 5.0f)
                                 {
-                                    cout << "start VIBA 1" << endl;
+                                    // cout << "start VIBA 1" << endl;
+                                    spdlog::info("start VIBA 1");
                                     mpCurrentKeyFrame->GetMap()->SetIniertialBA1();
                                     if (mbMonocular)
                                         InitializeIMU(1.f, 1e5, true);
                                     else
                                         InitializeIMU(1.f, 1e5, true);
 
-                                    cout << "end VIBA 1" << endl;
+                                    // cout << "end VIBA 1" << endl;
+                                    spdlog::info("end VIBA 1");
                                 }
                             }
                             else if (!mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
                             {
                                 if (mTinit > 15.0f)
                                 {
-                                    cout << "start VIBA 2" << endl;
+                                    // cout << "start VIBA 2" << endl;
+                                    spdlog::info("start VIBA 2");
                                     mpCurrentKeyFrame->GetMap()->SetIniertialBA2();
                                     if (mbMonocular)
                                         InitializeIMU(0.f, 0.f, true);
                                     else
                                         InitializeIMU(0.f, 0.f, true);
 
-                                    cout << "end VIBA 2" << endl;
+                                    // cout << "end VIBA 2" << endl;
+                                    spdlog::info("end VIBA 2");
                                 }
                             }
 
@@ -331,8 +589,122 @@ namespace ORB_SLAM3
         // Update links in the Covisibility Graph
         mpCurrentKeyFrame->UpdateConnections();
 
+        CreateNewMapEdges();
+
         // Insert Keyframe in Map
         mpAtlas->AddKeyFrame(mpCurrentKeyFrame);
+    }
+
+    void LocalMapping::CreateNewMapEdges()
+    {
+        if (!mpCurrentKeyFrame || mpCurrentKeyFrame->mvBezierCurves.empty())
+            return;
+
+        Map *pMap = mpCurrentKeyFrame->GetMap();
+        if (!pMap)
+            return;
+
+        const int nn = 10;
+        vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
+
+        // if (mbInertial)
+        // {
+        //     KeyFrame *pKF = mpCurrentKeyFrame;
+        //     int count = 0;
+        //     while ((vpNeighKFs.size() <= nn) && (pKF->mPrevKF) && (count++ < nn))
+        //     {
+        //         vector<KeyFrame *>::iterator it = std::find(vpNeighKFs.begin(), vpNeighKFs.end(), pKF->mPrevKF);
+        //         if (it == vpNeighKFs.end())
+        //             vpNeighKFs.push_back(pKF->mPrevKF);
+        //         pKF = pKF->mPrevKF;
+        //     }
+        // }
+
+        // EdgeMatcher matcher(5, true);
+        // for (size_t i = 0; i < vpNeighKFs.size(); i++)
+        // {
+        //     KeyFrame *pKF = vpNeighKFs[i];
+        //     std::vector<std::map<int, std::vector<int>>> matches12;
+        //     matcher.SearchByProjection(mpCurrentKeyFrame, pKF, matches12);
+
+        //     if (i == vpNeighKFs.size() - 1)
+        //     {
+        //         matcher.ShowCurveMatches(mpCurrentKeyFrame, pKF, matches12);
+        //     }
+        // }
+        std::set<KeyFrame *> spNeighborKeyFrames;
+        const std::vector<KeyFrame *> vpCovisibleKeyFrames =
+            mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
+        spNeighborKeyFrames.insert(vpCovisibleKeyFrames.begin(), vpCovisibleKeyFrames.end());
+
+        if (mbInertial)
+        {
+            KeyFrame *pTemporalKF = mpCurrentKeyFrame->mPrevKF;
+            int temporalCount = 0;
+            while (pTemporalKF && temporalCount++ < nn)
+            {
+                spNeighborKeyFrames.insert(pTemporalKF);
+                pTemporalKF = pTemporalKF->mPrevKF;
+            }
+        }
+
+        std::set<MapEdge *> spCandidateMapEdges;
+        for (KeyFrame *pNeighborKF : spNeighborKeyFrames)
+        {
+            if (!pNeighborKF || pNeighborKF->isBad() || pNeighborKF->GetMap() != pMap)
+                continue;
+
+            const std::vector<MapEdge *> vpNeighborMapEdges = pNeighborKF->GetMapEdgeMatches();
+            for (MapEdge *pME : vpNeighborMapEdges)
+            {
+                if (pME && !pME->isBad() && pME->GetMap() == pMap)
+                    spCandidateMapEdges.insert(pME);
+            }
+        }
+
+        std::vector<MapEdge *> vpCandidateMapEdges(spCandidateMapEdges.begin(),
+                                                   spCandidateMapEdges.end());
+        const Sophus::SE3f Tcw = mpCurrentKeyFrame->GetPose();
+
+        for (size_t idx = 0; idx < mpCurrentKeyFrame->mvBezierCurves.size(); ++idx)
+        {
+            if (mpCurrentKeyFrame->GetMapEdge(idx))
+                continue;
+
+            const BezierCurve &curve = mpCurrentKeyFrame->mvBezierCurves[idx];
+            EdgeControlPoints curveWorldPoints = ToWorldEdgePoints(curve.sampledPoints, Tcw);
+            if (curveWorldPoints.size() < 2)
+                curveWorldPoints = ToWorldEdgePoints(curve.controlPoints, Tcw);
+
+            if (curveWorldPoints.size() < 2)
+                continue;
+
+            MapEdge *pMatchedEdge =
+                FindMatchingMapEdge(vpCandidateMapEdges, curve, curveWorldPoints,
+                                    mpCurrentKeyFrame, Tcw);
+            if (pMatchedEdge)
+            {
+                EdgeControlPoints controlWorldPoints = ToWorldEdgePoints(curve.controlPoints, Tcw);
+                EdgeControlPoints sampledWorldPoints = ToWorldEdgePoints(curve.sampledPoints, Tcw);
+                pMatchedEdge->AddObservation(mpCurrentKeyFrame, idx);
+                mpCurrentKeyFrame->AddMapEdge(pMatchedEdge, idx);
+                pMatchedEdge->FuseWorldGeometry(controlWorldPoints, sampledWorldPoints);
+                pMatchedEdge->IncreaseFound();
+                pMatchedEdge->IncreaseVisible();
+                pMatchedEdge->UpdateAverageDirAndDepth();
+                continue;
+            }
+
+            MapEdge *pME = new MapEdge(mpCurrentKeyFrame, pMap, static_cast<int>(idx));
+            if (pME->GetWorldControlPoints().size() < 2 && pME->GetWorldSampledPoints().size() < 2)
+            {
+                pME->SetBadFlag();
+                continue;
+            }
+
+            pME->UpdateAverageDirAndDepth();
+            vpCandidateMapEdges.push_back(pME);
+        }
     }
 
     void LocalMapping::EmptyQueue()

@@ -374,7 +374,7 @@ namespace ORB_SLAM3
     {
         unique_lock<mutex> lock(mMutex);
 
-        if (mBeziers.empty() || mIm.empty()) return cv::Mat();
+        if (mvBezierCurves.empty() || mIm.empty()) return cv::Mat();
 
         cv::RNG rng(66);
         cv::Mat image_viz = mIm.clone();
@@ -393,62 +393,48 @@ namespace ORB_SLAM3
 
         cv::cvtColor(image_viz, image_viz, cv::COLOR_GRAY2BGR);
 
-        BezierCurveFitter bezierEvaluator;
-        for (int i = 0; i < mvEdges.size(); ++i)
+        for (const BezierCurve &curve : mvBezierCurves)
         {
             int b = rng.uniform(0, 255);
             int g = rng.uniform(0, 255);
             int r = rng.uniform(0, 255);
             cv::Scalar curveColor(b, g, r);
-            auto bezierIt = mBeziers.find(mvEdges[i].edge_ID);
-            if (bezierIt == mBeziers.end())
+
+            if (curve.sampledPoints.size() < 2)
                 continue;
 
-            for (const std::vector<orderedEdgePoint> &controlPoints : bezierIt->second)
+            for (size_t k = 1; k < curve.sampledPoints.size(); ++k)
             {
-                if (controlPoints.size() < 2)
-                    continue;
-
-                const int sampleCount = 40;
-                orderedEdgePoint prev = bezierEvaluator.evaluate(controlPoints, 0.0);
-                for (int k = 1; k <= sampleCount; ++k)
-                {
-                    const double t = static_cast<double>(k) / static_cast<double>(sampleCount);
-                    orderedEdgePoint curr = bezierEvaluator.evaluate(controlPoints, t);
-
-                    cv::Point p0(cvRound(prev.x), cvRound(prev.y));
-                    cv::Point p1(cvRound(curr.x), cvRound(curr.y));
-                    if (cv::clipLine(image_viz.size(), p0, p1))
-                        cv::line(image_viz, p0, p1, curveColor, 2, cv::LINE_AA);
-
-                    prev = curr;
-                }
-
-                const int order = static_cast<int>(controlPoints.size()) - 1;
-                if (order > 1)
-                {
-                    const std::string label = "E" + std::to_string(mvEdges[i].edge_ID) +
-                                              " O" + std::to_string(order) +
-                                              " C" + std::to_string(mvEdges[i].cls);
-                    orderedEdgePoint labelPoint = bezierEvaluator.evaluate(controlPoints, 0.5);
-
-                    int baseline = 0;
-                    const double fontScale = 0.4;
-                    const int textThickness = 1;
-                    cv::Size textSize = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX,
-                                                        fontScale, textThickness, &baseline);
-                    int labelX = cvRound(labelPoint.x) + 4;
-                    int labelY = cvRound(labelPoint.y) - 4;
-                    labelX = std::max(0, std::min(labelX, image_viz.cols - textSize.width - 1));
-                    labelY = std::max(textSize.height + 1, std::min(labelY, image_viz.rows - baseline - 1));
-
-                    cv::Point textOrigin(labelX, labelY);
-                    cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
-                                fontScale, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
-                    cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
-                                fontScale, cv::Scalar(255, 255, 255), textThickness, cv::LINE_AA);
-                }
+                cv::Point p0(cvRound(curve.sampledPoints[k - 1].x), cvRound(curve.sampledPoints[k - 1].y));
+                cv::Point p1(cvRound(curve.sampledPoints[k].x), cvRound(curve.sampledPoints[k].y));
+                if (cv::clipLine(image_viz.size(), p0, p1))
+                    cv::line(image_viz, p0, p1, curveColor, 2, cv::LINE_AA);
             }
+
+            const int order = static_cast<int>(curve.controlPoints.size()) - 1;
+            // if (order > 1)
+            // {
+            //     const std::string label = "E" + std::to_string(curve.edge_ID) +
+            //                               " O" + std::to_string(order) +
+            //                               " C" + std::to_string(curve.cls);
+            //     const orderedEdgePoint &labelPoint = curve.sampledPoints[curve.sampledPoints.size() / 2];
+
+            //     int baseline = 0;
+            //     const double fontScale = 0.4;
+            //     const int textThickness = 1;
+            //     cv::Size textSize = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX,
+            //                                         fontScale, textThickness, &baseline);
+            //     int labelX = cvRound(labelPoint.x) + 4;
+            //     int labelY = cvRound(labelPoint.y) - 4;
+            //     labelX = std::max(0, std::min(labelX, image_viz.cols - textSize.width - 1));
+            //     labelY = std::max(textSize.height + 1, std::min(labelY, image_viz.rows - baseline - 1));
+
+            //     cv::Point textOrigin(labelX, labelY);
+            //     cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
+            //                 fontScale, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+            //     cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
+            //                 fontScale, cv::Scalar(255, 255, 255), textThickness, cv::LINE_AA);
+            // }
         }
         return image_viz;
     }
@@ -611,7 +597,7 @@ namespace ORB_SLAM3
         mThDepth = pTracker->mCurrentFrame.mThDepth;
         mvCurrentDepth = pTracker->mCurrentFrame.mvDepth;
         mvEdges = pTracker->mCurrentFrame.mvEdges;
-        mBeziers = pTracker->mCurrentFrame.mBeziers;
+        mvBezierCurves = pTracker->mCurrentFrame.mvBezierCurves;
         pTracker->mCurrentFrame.mImgSem.copyTo(mSemMask);
         if (pReferenceKF)
             mvKfEdges = pReferenceKF->mvEdges;

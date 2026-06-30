@@ -18,6 +18,7 @@
 
 #include "MapDrawer.h"
 #include "MapPoint.h"
+#include "MapEdge.h"
 #include "KeyFrame.h"
 #include <pangolin/pangolin.h>
 #include <mutex>
@@ -181,38 +182,29 @@ namespace ORB_SLAM3
         if (!pActiveMap)
             return;
 
-        const vector<KeyFrame *> vpKFs = pActiveMap->GetAllKeyFrames();
-        if (vpKFs.empty())
-            return;
-
-        glLineWidth(2.0f);
-        glColor4f(1.0f, 0.45f, 0.0f, 0.9f);
-
-        for (KeyFrame *pKF : vpKFs)
+        const vector<MapEdge *> vpMEs = pActiveMap->GetAllMapEdges();
+        if (!vpMEs.empty())
         {
-            if (!pKF || pKF->isBad() || pKF->mBezierCameraPoints.empty())
-                continue;
+            glPointSize(mPointSize);
+            glColor4f(1.0f, 0.45f, 0.0f, 0.9f);
 
-            Eigen::Matrix4f Twc = pKF->GetPoseInverse().matrix();
-
-            glPushMatrix();
-            glMultMatrixf((GLfloat *)Twc.data());
-
-            for (const auto &edgeCurves : pKF->mBezierCameraPoints)
+            for (MapEdge *pME : vpMEs)
             {
-                for (const std::vector<Eigen::Vector3f> &segment : edgeCurves.second)
-                {
-                    if (segment.size() < 2)
-                        continue;
+                if (!pME || pME->isBad())
+                    continue;
 
-                    glBegin(GL_LINE_STRIP);
-                    for (const Eigen::Vector3f &pc : segment)
-                        glVertex3f(pc.x(), pc.y(), pc.z());
-                    glEnd();
-                }
+                EdgeControlPoints points = pME->GetWorldSampledPoints();
+                if (points.size() < 2)
+                    points = pME->GetWorldControlPoints();
+
+                if (points.size() < 2)
+                    continue;
+
+                glBegin(GL_POINTS);
+                for (const Eigen::Vector3f &point : points)
+                    glVertex3f(point(0), point(1), point(2));
+                glEnd();
             }
-
-            glPopMatrix();
         }
     }
 

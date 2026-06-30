@@ -274,7 +274,9 @@ protected:
 
     //Local Map
     KeyFrame* mpReferenceKF;
+    // 当前帧附近的局部关键帧集合
     std::vector<KeyFrame*> mvpLocalKeyFrames;
+    // 当前帧附近的局部地图点集合
     std::vector<MapPoint*> mvpLocalMapPoints;
     
     // System

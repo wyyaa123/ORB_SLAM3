@@ -42,6 +42,7 @@ namespace ORB_SLAM3
 
     class Map;
     class MapPoint;
+    class MapEdge;
     class Frame;
     class KeyFrameDatabase;
 
@@ -255,6 +256,16 @@ namespace ORB_SLAM3
         int TrackedMapPoints(const int &minObs);
         MapPoint *GetMapPoint(const size_t &idx);
 
+        // MapEdge observation functions
+        void AddMapEdge(MapEdge *pME, const size_t &idx);
+        void EraseMapEdgeMatch(const int &idx);
+        void EraseMapEdgeMatch(MapEdge *pME);
+        void ReplaceMapEdgeMatch(const int &idx, MapEdge *pME);
+        std::set<MapEdge *> GetMapEdges();
+        std::vector<MapEdge *> GetMapEdgeMatches();
+        int TrackedMapEdges(const int &minObs);
+        MapEdge *GetMapEdge(const size_t &idx);
+
         // KeyPoint functions
         std::vector<size_t> GetFeaturesInArea(const float &x, const float &y, const float &r, const bool bRight = false) const;
         bool UnprojectStereo(int i, Eigen::Vector3f &x3D);
@@ -419,7 +430,8 @@ namespace ORB_SLAM3
         std::vector<KeyFrame *> mvpMergeCandKFs;
 
         std::vector<Edge> mvEdges;
-        std::map<int, std::vector<std::vector<Eigen::Vector3f>>> mBezierCameraPoints;
+        cv::Mat mMatSearch;
+        std::vector<BezierCurve> mvBezierCurves;
         cv::Mat mImg;
 
         // bool mbHasHessian;
@@ -448,6 +460,8 @@ namespace ORB_SLAM3
 
         // MapPoints associated to keypoints
         std::vector<MapPoint *> mvpMapPoints;
+        // MapEdges associated to Bezier curves
+        std::vector<MapEdge *> mvpMapEdges;
         // For save relation without pointer, this is necessary for save/load function
         std::vector<long long int> mvBackupMapPointsId;
 

@@ -85,7 +85,7 @@ namespace ORB_SLAM3
         vector<MapPoint *> mvpOutlierMPs;
         std::vector<Edge> mvEdges;
         std::vector<Edge> mvKfEdges;
-        std::map<int, std::vector<std::vector<orderedEdgePoint>>> mBeziers;
+        std::vector<BezierCurve> mvBezierCurves;
 
         map<long unsigned int, cv::Point2f> mmProjectPoints;
         map<long unsigned int, cv::Point2f> mmMatchedInImage;

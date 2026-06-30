@@ -44,6 +44,7 @@ namespace ORB_SLAM3
     {
         // TODO: erase all points from memory
         mspMapPoints.clear();
+        mspMapEdges.clear();
 
         // TODO: erase all keyframes from memory
         mspKeyFrames.clear();
@@ -61,7 +62,8 @@ namespace ORB_SLAM3
         unique_lock<mutex> lock(mMutexMap);
         if (mspKeyFrames.empty())
         {
-            cout << "First KF:" << pKF->mnId << "; Map init KF:" << mnInitKFid << endl;
+            // cout << "First KF:" << pKF->mnId << "; Map init KF:" << mnInitKFid << endl;
+            spdlog::info("First KF: {}; Map init KF: {}", pKF->mnId, mnInitKFid);
             mnInitKFid = pKF->mnId;
             mpKFinitial = pKF;
             mpKFlowerID = pKF;
@@ -83,6 +85,12 @@ namespace ORB_SLAM3
         mspMapPoints.insert(pMP);
     }
 
+    void Map::AddMapEdge(MapEdge *pME)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapEdges.insert(pME);
+    }
+
     void Map::SetImuInitialized()
     {
         unique_lock<mutex> lock(mMutexMap);
@@ -102,6 +110,14 @@ namespace ORB_SLAM3
 
         // TODO: This only erase the pointer.
         // Delete the MapPoint
+    }
+
+    void Map::EraseMapEdge(MapEdge *pME)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapEdges.erase(pME);
+
+        // TODO: This only erase the pointer.
     }
 
     void Map::EraseKeyFrame(KeyFrame *pKF)
@@ -156,10 +172,22 @@ namespace ORB_SLAM3
         return vector<MapPoint *>(mspMapPoints.begin(), mspMapPoints.end());
     }
 
+    vector<MapEdge *> Map::GetAllMapEdges()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return vector<MapEdge *>(mspMapEdges.begin(), mspMapEdges.end());
+    }
+
     long unsigned int Map::MapPointsInMap()
     {
         unique_lock<mutex> lock(mMutexMap);
         return mspMapPoints.size();
+    }
+
+    long unsigned int Map::MapEdgesInMap()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return mspMapEdges.size();
     }
 
     long unsigned int Map::KeyFramesInMap()
@@ -224,6 +252,7 @@ namespace ORB_SLAM3
         }
 
         mspMapPoints.clear();
+        mspMapEdges.clear();
         mspKeyFrames.clear();
         mnMaxKFid = mnInitKFid;
         mbImuInitialized = false;
@@ -276,6 +305,20 @@ namespace ORB_SLAM3
             MapPoint *pMP = *sit;
             pMP->SetWorldPos(s * Ryw * pMP->GetWorldPos() + tyw);
             pMP->UpdateNormalAndDepth();
+        }
+        for (set<MapEdge *>::iterator sit = mspMapEdges.begin(); sit != mspMapEdges.end(); sit++)
+        {
+            MapEdge *pME = *sit;
+            EdgeControlPoints controlPoints = pME->GetWorldControlPoints();
+            for (Eigen::Vector3f &point : controlPoints)
+                point = s * Ryw * point + tyw;
+            pME->SetWorldControlPoints(controlPoints);
+
+            EdgeControlPoints sampledPoints = pME->GetWorldSampledPoints();
+            for (Eigen::Vector3f &point : sampledPoints)
+                point = s * Ryw * point + tyw;
+            pME->SetWorldSampledPoints(sampledPoints);
+            pME->UpdateAverageDirAndDepth();
         }
         mnMapChange++;
     }
