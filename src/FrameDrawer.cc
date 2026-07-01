@@ -324,6 +324,119 @@ namespace ORB_SLAM3
         return imWithInfo;
     }
 
+    cv::Mat FrameDrawer::DrawFrameEdges()
+    {
+        unique_lock<mutex> lock(mMutex);
+
+        if (mvEdges.empty())
+            return cv::Mat();
+
+        cv::RNG rng(66);
+        cv::Mat image_viz = mIm.clone();
+
+        if (image_viz.channels() == 3)
+            cv::cvtColor(image_viz, image_viz, cv::COLOR_BGR2GRAY);
+
+        for (int y = 0; y < image_viz.rows; ++y)
+        {
+            for (int x = 0; x < image_viz.cols; ++x)
+            {
+                // 获取当前像素值
+                uchar &pixel = image_viz.at<uchar>(y, x);
+
+                // 将像素值减半，确保不会小于0
+                pixel = static_cast<uchar>(pixel / 1.3);
+            }
+        }
+
+        cv::cvtColor(image_viz, image_viz, cv::COLOR_GRAY2BGR);
+        int maxLabel = 0;
+        for (int i = 0; i < mvEdges.size(); ++i)
+        {
+            int b = rng.uniform(0, 255);
+            int g = rng.uniform(0, 255);
+            int r = rng.uniform(0, 255);
+            cv::Vec3b color = cv::Vec3b(b, g, r);
+            // if(mvEdgeClusters[i].mvPoints.size()<15) continue;
+            for (int j = 0; j < mvEdges[i].mvPoints.size(); ++j)
+            {
+                orderedEdgePoint curr = mvEdges[i].mvPoints[j];
+                image_viz.at<cv::Vec3b>(curr.y, curr.x) = color;
+                cv::circle(image_viz, cv::Point(curr.x, curr.y), 1, color, 1, cv::LINE_AA);
+            }
+        }
+        return image_viz;
+    }
+
+    cv::Mat FrameDrawer::DrawFrameBeziers()
+    {
+        unique_lock<mutex> lock(mMutex);
+
+        if (mvBezierCurves.empty() || mIm.empty()) return cv::Mat();
+
+        cv::RNG rng(66);
+        cv::Mat image_viz = mIm.clone();
+
+        if (image_viz.channels() == 3)
+            cv::cvtColor(image_viz, image_viz, cv::COLOR_BGR2GRAY);
+
+        for (int y = 0; y < image_viz.rows; ++y)
+        {
+            for (int x = 0; x < image_viz.cols; ++x)
+            {
+                uchar &pixel = image_viz.at<uchar>(y, x);
+                pixel = static_cast<uchar>(pixel / 1.3);
+            }
+        }
+
+        cv::cvtColor(image_viz, image_viz, cv::COLOR_GRAY2BGR);
+
+        for (const BezierCurve &curve : mvBezierCurves)
+        {
+            int b = rng.uniform(0, 255);
+            int g = rng.uniform(0, 255);
+            int r = rng.uniform(0, 255);
+            cv::Scalar curveColor(b, g, r);
+
+            if (curve.sampledPoints.size() < 2)
+                continue;
+
+            for (size_t k = 1; k < curve.sampledPoints.size(); ++k)
+            {
+                cv::Point p0(cvRound(curve.sampledPoints[k - 1].x), cvRound(curve.sampledPoints[k - 1].y));
+                cv::Point p1(cvRound(curve.sampledPoints[k].x), cvRound(curve.sampledPoints[k].y));
+                if (cv::clipLine(image_viz.size(), p0, p1))
+                    cv::line(image_viz, p0, p1, curveColor, 2, cv::LINE_AA);
+            }
+
+            const int order = static_cast<int>(curve.controlPoints.size()) - 1;
+            // if (order > 1)
+            // {
+            //     const std::string label = "E" + std::to_string(curve.edge_ID) +
+            //                               " O" + std::to_string(order) +
+            //                               " C" + std::to_string(curve.cls);
+            //     const orderedEdgePoint &labelPoint = curve.sampledPoints[curve.sampledPoints.size() / 2];
+
+            //     int baseline = 0;
+            //     const double fontScale = 0.4;
+            //     const int textThickness = 1;
+            //     cv::Size textSize = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX,
+            //                                         fontScale, textThickness, &baseline);
+            //     int labelX = cvRound(labelPoint.x) + 4;
+            //     int labelY = cvRound(labelPoint.y) - 4;
+            //     labelX = std::max(0, std::min(labelX, image_viz.cols - textSize.width - 1));
+            //     labelY = std::max(textSize.height + 1, std::min(labelY, image_viz.rows - baseline - 1));
+
+            //     cv::Point textOrigin(labelX, labelY);
+            //     cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
+            //                 fontScale, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+            //     cv::putText(image_viz, label, textOrigin, cv::FONT_HERSHEY_SIMPLEX,
+            //                 fontScale, cv::Scalar(255, 255, 255), textThickness, cv::LINE_AA);
+            // }
+        }
+        return image_viz;
+    }
+
     void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
     {
         stringstream s;
@@ -369,6 +482,8 @@ namespace ORB_SLAM3
         mvCurrentKeys = pTracker->mCurrentFrame.mvKeys;
         mThDepth = pTracker->mCurrentFrame.mThDepth;
         mvCurrentDepth = pTracker->mCurrentFrame.mvDepth;
+        mvEdges = pTracker->mCurrentFrame.mvEdges;
+        mvBezierCurves = pTracker->mCurrentFrame.mvBezierCurves;
 
         if (both)
         {

@@ -175,6 +175,46 @@ namespace ORB_SLAM3
         glEnd();
     }
 
+    void MapDrawer::DrawMapEdges()
+    {
+        Map *pActiveMap = mpAtlas->GetCurrentMap();
+        if (!pActiveMap)
+            return;
+
+        const vector<MapBezier *> vBeziers = pActiveMap->GetAllMapBeziers();
+        static constexpr float edgeColors[][3] = {
+            {0.00f, 0.60f, 1.00f},
+            {1.00f, 0.30f, 0.20f},
+            {0.20f, 0.75f, 0.30f},
+            {1.00f, 0.65f, 0.00f},
+            {0.65f, 0.35f, 1.00f},
+            {0.00f, 0.75f, 0.70f},
+            {1.00f, 0.25f, 0.65f},
+            {0.65f, 0.65f, 0.00f},
+        };
+        constexpr size_t colorCount = sizeof(edgeColors) / sizeof(edgeColors[0]);
+
+        glPointSize(mPointSize);
+
+        for (MapBezier *pMB : vBeziers)
+        {
+            if (!pMB || pMB->isBad())
+                continue;
+
+            const auto vPts = pMB->GetWorldPoints();
+            if (vPts.size() < 2)
+                continue;
+
+            const float *color = edgeColors[pMB->mnId % colorCount];
+            glColor3fv(color);
+
+            glBegin(GL_POINTS);
+            for (const auto &p : vPts)
+                glVertex3f(p(0), p(1), p(2));
+            glEnd();
+        }
+    }
+
     void MapDrawer::DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph, const bool bDrawInertialGraph, const bool bDrawOptLba)
     {
         const float &w = mKeyFrameSize;

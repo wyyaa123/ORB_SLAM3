@@ -88,3 +88,8 @@ Viewer.ViewpointX: 0.0
 Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -3.5
 Viewer.ViewpointF: 500.0
+
+Edge.MinDepth: 0.02
+Edge.CullMinDepth: 0.2
+Edge.MaxDepth: 5.0
+Edge.MinValidRatio: 0.3

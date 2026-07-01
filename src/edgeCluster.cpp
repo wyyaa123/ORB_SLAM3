@@ -79,7 +79,7 @@ std::vector<edgePoint> EdgeCluster::organize()
     else if(mvPoints[root_idx].degree > 1)
     {
         //-- 如果根节点度数大于1，那么它需要merge，此时merge两个不重合部分最长的route
-        int idx_0, idx_1;
+        size_t idx_0 = 0, idx_1 = 0;
         int maxLength = -1;
         for(size_t j = 0; j < routeList.size(); ++j)
         {

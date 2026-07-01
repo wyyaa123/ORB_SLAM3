@@ -114,6 +114,12 @@ namespace ORB_SLAM3
         pMapMP->AddMapPoint(pMP);
     }
 
+    void Atlas::AddMapBezier(MapBezier *pMB)
+    {
+        Map *pMapMB = pMB->GetMap();
+        pMapMB->AddMapBezier(pMB);
+    }
+
     GeometricCamera *Atlas::AddCamera(GeometricCamera *pCam)
     {
         // Check if the camera already exists

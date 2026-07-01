@@ -10,7 +10,7 @@ class edgeExtracter
 public:
     edgeExtracter(double _angleThreshold, double _threshold1, double _threshold2) : angleThreshold(_angleThreshold), threshold1(_threshold1), threshold2(_threshold2) {}
 
-    std::vector<BezierCurve> operator()(cv::Mat imGray, cv::Mat imSem = cv::Mat());
+    std::vector<Edge> operator()(cv::Mat imGray, cv::Mat imSem = cv::Mat());
 
     std::vector<Edge> getEdges() const { return mvEdges; }
 

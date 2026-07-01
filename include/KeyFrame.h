@@ -20,6 +20,7 @@
 #define KEYFRAME_H
 
 #include "MapPoint.h"
+#include "MapBezier.h"
 #include "DBoW2/BowVector.h"
 #include "DBoW2/FeatureVector.h"
 #include "ORBVocabulary.h"
@@ -259,6 +260,16 @@ namespace ORB_SLAM3
         std::vector<size_t> GetFeaturesInArea(const float &x, const float &y, const float &r, const bool bRight = false) const;
         bool UnprojectStereo(int i, Eigen::Vector3f &x3D);
 
+        // MapBezier observation functions
+        void AddMapBezier(MapBezier *pMB, const size_t &idx);
+        void EraseMapBezierMatch(const int &idx);
+        void EraseMapBezierMatch(MapBezier *pMB);
+        void ReplaceMapBezierMatch(const int &idx, MapBezier *pMB);
+        std::set<MapBezier *> GetMapBeziers();
+        std::vector<MapBezier *> GetMapBezierMatches();
+        int TrackedMapBeziers(const int &minObs);
+        MapBezier *GetMapBezier(size_t idx);
+
         // Image
         bool IsInImage(const float &x, const float &y) const;
 
@@ -381,6 +392,9 @@ namespace ORB_SLAM3
         const std::vector<float> mvDepth;  // negative value for monocular points
         const cv::Mat mDescriptors;
 
+        // Edge
+        const std::vector<Edge> mvEdges;
+        std::vector<BezierCurve> mvBezierCurves;
         // BoW
         DBoW2::BowVector mBowVec;
         DBoW2::FeatureVector mFeatVec;
@@ -418,10 +432,6 @@ namespace ORB_SLAM3
         std::vector<KeyFrame *> mvpLoopCandKFs;
         std::vector<KeyFrame *> mvpMergeCandKFs;
 
-        std::vector<Edge> mvEdges;
-        std::map<int, std::vector<std::vector<Eigen::Vector3f>>> mBezierCameraPoints;
-        cv::Mat mImg;
-
         // bool mbHasHessian;
         // cv::Mat mHessianPose;
 
@@ -450,6 +460,9 @@ namespace ORB_SLAM3
         std::vector<MapPoint *> mvpMapPoints;
         // For save relation without pointer, this is necessary for save/load function
         std::vector<long long int> mvBackupMapPointsId;
+
+        // MapEdge
+        std::vector<MapBezier *> mvpMapBeziers;
 
         // BoW
         KeyFrameDatabase *mpKeyFrameDB;

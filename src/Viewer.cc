@@ -19,11 +19,11 @@
 #include "Viewer.h"
 #include <pangolin/pangolin.h>
 
+#include <cmath>
 #include <mutex>
 
 namespace ORB_SLAM3
 {
-
     Viewer::Viewer(System *pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings *settings) : both(false), mpSystem(pSystem), mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpTracker(pTracking),
                                                                                                                                                                mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false)
     {
@@ -179,6 +179,7 @@ namespace ORB_SLAM3
         pangolin::Var<bool> menuTopView("menu.Top View", false, false);
         // pangolin::Var<bool> menuSideView("menu.Side View",false,false);
         pangolin::Var<bool> menuShowPoints("menu.Show Points", true, true);
+        pangolin::Var<bool> menuShowBezier("menu.Show Bezier", true, true);
         pangolin::Var<bool> menuShowKeyFrames("menu.Show KeyFrames", true, true);
         pangolin::Var<bool> menuShowGraph("menu.Show Graph", false, true);
         pangolin::Var<bool> menuShowInertialGraph("menu.Show Inertial Graph", true, true);
@@ -312,6 +313,9 @@ namespace ORB_SLAM3
                 mpMapDrawer->DrawKeyFrames(menuShowKeyFrames, menuShowGraph, menuShowInertialGraph, menuShowOptLba);
             if (menuShowPoints)
                 mpMapDrawer->DrawMapPoints();
+            if (menuShowBezier)
+                mpMapDrawer->DrawMapEdges();
+            
 
             pangolin::FinishFrame();
 
@@ -337,23 +341,23 @@ namespace ORB_SLAM3
 
             cv::imshow("ORB-SLAM3: Current Frame", toShow);
 
-            // {
-            //     cv::Mat imKfEdge = mpFrameDrawer->DrawKeyFrameEdges();
-            //     if(!imKfEdge.empty()) cv::imshow("ORB-SLAM3: Reference KeyFrame Edges", imKfEdge);
-            //     else spdlog::warn("No reference keyframe edges to display.");
+            {
+                // cv::Mat imKfEdge = mpFrameDrawer->DrawKeyFrameEdges();
+                // if(!imKfEdge.empty()) cv::imshow("ORB-SLAM3: Reference KeyFrame Edges", imKfEdge);
+                // else spdlog::warn("No reference keyframe edges to display.");
 
-            //     cv::Mat imEdge = mpFrameDrawer->DrawFrameEdges();
-            //     if(!imEdge.empty()) cv::imshow("ORB-SLAM3: Current Frame Edges", imEdge);
-            //     else spdlog::warn("No current frame edges to display.");
+                cv::Mat imEdge = mpFrameDrawer->DrawFrameEdges();
+                if(!imEdge.empty()) cv::imshow("ORB-SLAM3: Current Frame Edges", imEdge);
+                else spdlog::warn("No current frame edges to display.");
 
-            //     cv::Mat imSem = mpFrameDrawer->DrawFrameSemanticMask(trackedImageScale);
-            //     if (!imSem.empty()) cv::imshow("ORB-SLAM3: Current Frame Semantic Mask", imSem);
-            //     else spdlog::warn("No current frame semantic mask to display.");
+                // cv::Mat imSem = mpFrameDrawer->DrawFrameSemanticMask(trackedImageScale);
+                // if (!imSem.empty()) cv::imshow("ORB-SLAM3: Current Frame Semantic Mask", imSem);
+                // else spdlog::warn("No current frame semantic mask to display.");
 
-            //     cv::Mat imBezier = mpFrameDrawer->DrawFrameBeziers();
-            //     if(!imBezier.empty()) cv::imshow("ORB-SLAM3: Current Frame Beziers", imBezier);
-            //     else spdlog::warn("No current frame beziers to display.");
-            // }
+                cv::Mat imBezier = mpFrameDrawer->DrawFrameBeziers();
+                if(!imBezier.empty()) cv::imshow("ORB-SLAM3: Current Frame Beziers", imBezier);
+                else spdlog::warn("No current frame beziers to display.");
+            }
 
             cv::waitKey(mT);
 

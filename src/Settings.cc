@@ -506,6 +506,17 @@ namespace ORB_SLAM3
         minThFAST_ = readParameter<int>(fSettings, "ORBextractor.minThFAST", found);
     }
 
+    void Settings::readEdge(cv::FileStorage &fSettings)
+    {
+        bool found;
+
+        edgeSampleSize_ = readParameter<int>(fSettings, "Edge.SampleSize", found);
+        edgeMinDepth_ = readParameter<float>(fSettings, "Edge.MinDepth", found);
+        edgeCullMinDepth_ = readParameter<float>(fSettings, "Edge.CullMinDepth", found);
+        edgeMaxDepth_ = readParameter<float>(fSettings, "Edge.MaxDepth", found);
+        edgeMinValidRatio_ = readParameter<float>(fSettings, "Edge.MinValidRatio", found);
+    }
+
     void Settings::readViewer(cv::FileStorage &fSettings)
     {
         bool found;

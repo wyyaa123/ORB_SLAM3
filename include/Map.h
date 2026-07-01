@@ -75,7 +75,9 @@ public:
 
     void AddKeyFrame(KeyFrame* pKF);
     void AddMapPoint(MapPoint* pMP);
+    void AddMapBezier(MapBezier* pMB);
     void EraseMapPoint(MapPoint* pMP);
+    void EraseMapBezier(MapBezier* pMB);
     void EraseKeyFrame(KeyFrame* pKF);
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
     void InformNewBigChange();
@@ -84,9 +86,11 @@ public:
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
+    std::vector<MapBezier*> GetAllMapBeziers();
 
     long unsigned int MapPointsInMap();
     long unsigned  KeyFramesInMap();
+    long unsigned int MapBeziersInMap();
 
     long unsigned int GetId();
 
@@ -161,6 +165,7 @@ protected:
 
     std::set<MapPoint*> mspMapPoints;
     std::set<KeyFrame*> mspKeyFrames;
+    std::set<MapBezier*> mspMapBeziers;
 
     // Save/load, the set structure is broken in libboost 1.58 for ubuntu 16.04, a vector is serializated
     std::vector<MapPoint*> mvpBackupMapPoints;

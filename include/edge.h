@@ -31,37 +31,37 @@ public:
     // ###########################
 
     //-- 像素坐标
-    double x;
-    double y;
+    double x = 0.0;
+    double y = 0.0;
     //-- RGBD给的深度
-    float depth;
+    float depth = 0.0f;
     //-- 梯度角度
-    float imgGradAngle;
+    float imgGradAngle = 0.0f;
 
     // ###########################
     //--      3D相关成员
     // ###########################
-    double x_3d;
-    double y_3d;
-    double z_3d;
-    float score_depth;
-    float score_visible;
+    double x_3d = 0.0;
+    double y_3d = 0.0;
+    double z_3d = 0.0;
+    float score_depth = 0.0f;
+    float score_visible = 0.0f;
 
     // ###########################
     //--      索引相关成员
     // ###########################
-    int frame_edge_ID;
-    int frame_point_index;
+    int frame_edge_ID = -1;
+    int frame_point_index = -1;
 
     // ###########################
     //--      关联相关成员
     // ###########################
-    bool mbAssociated;
+    bool mbAssociated = false;
     //-- 半径内搜索得到的最近邻列表
     std::vector<int> mvAssoFrameEdgeIDs;
     std::vector<int> mvAssoFramePointIndices;
-    int asso_edge_ID;     //-- 与当前点关联的参考帧点的edge ID
-    int asso_point_index; //-- 与当前点关联的参考帧点的point index
+    int asso_edge_ID = -1;     //-- 与当前点关联的参考帧点的edge ID
+    int asso_point_index = -1; //-- 与当前点关联的参考帧点的point index
 
     orderedEdgePoint(double _x, double _y)
     {

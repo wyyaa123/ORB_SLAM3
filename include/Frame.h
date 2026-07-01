@@ -46,6 +46,7 @@ namespace ORB_SLAM3
 #define FRAME_GRID_COLS 64
 
     class MapPoint;
+    class MapBezier;
     class KeyFrame;
     class ConstraintPoseImu;
     class GeometricCamera;
@@ -265,6 +266,7 @@ namespace ORB_SLAM3
 
         // Corresponding stereo coordinate and depth for each keypoint.
         std::vector<MapPoint *> mvpMapPoints;
+        std::vector<MapBezier *> mvpMapBeziers;
         // "Monocular" keypoints have a negative value.
         std::vector<float> mvuRight;
         std::vector<float> mvDepth;
@@ -356,6 +358,10 @@ namespace ORB_SLAM3
 
         void BezierCullingDepth();
 
+        void edgeCullingDepth();
+
+        void assignPropertyIdx();
+
         void constructSearchPlain();
 
         bool mbIsSet;
@@ -395,9 +401,18 @@ namespace ORB_SLAM3
 
         Eigen::Vector3f UnprojectStereoFishEye(const int &i);
 
+        void sampleBezierCurves();
+
+        bool isPointsAssociated(const orderedEdgePoint &pt1, const orderedEdgePoint &pt2);
+        void searchRadius(float x, float y, double radius, std::vector<orderedEdgePoint> &result);
+        std::vector<int> edgeWiseCorrespondenceReproject(Edge &query_edge, const Sophus::SE3f &T2curr);
+
         cv::Mat mImgLeft, mImgRight;
         cv::Mat mImgDepth, mImgSem;
 
+        std::map<int, int> mmIndexMap;
+        cv::Mat mMatSearch;
+        std::vector<Edge> mvEdges;
         std::vector<BezierCurve> mvBezierCurves; // List of Bezier curves fitted to edges
 
         void PrintPointDistribution()

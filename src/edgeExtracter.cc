@@ -1,6 +1,6 @@
 #include "edgeExtracter.h"
 
-std::vector<BezierCurve> edgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem)
+std::vector<Edge> edgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem)
 {
     // Edge extraction and processing
     cv::Canny(imGray, mCanny, threshold1, threshold2, 3, true);
@@ -22,9 +22,9 @@ std::vector<BezierCurve> edgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem
 
     cvt2OrderedEdges();
 
-    getBezierSampledPoints(3);
+    // getBezierSampledPoints(3);
 
-    return mvBezierCurves;
+    return mvEdges;
 }
 
 inline float edgeExtracter::calcAngleBias(float angle_1, float angle_2)
@@ -131,7 +131,6 @@ void edgeExtracter::cvt2OrderedEdges()
     {
         Edge curr_edge(i);
         const auto &cluster_points = mvEdgeClusters[i].organize();
-        ;
         curr_edge.mvPoints.reserve(cluster_points.size());
 
         for (const auto &point : cluster_points)

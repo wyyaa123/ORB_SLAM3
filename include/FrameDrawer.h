@@ -47,6 +47,8 @@ namespace ORB_SLAM3
         // Draw last processed frame.
         cv::Mat DrawFrame(float imageScale = 1.f);
         cv::Mat DrawRightFrame(float imageScale = 1.f);
+        cv::Mat DrawFrameEdges();
+        cv::Mat DrawFrameBeziers();
 
         bool both;
 
@@ -78,6 +80,9 @@ namespace ORB_SLAM3
         vector<cv::KeyPoint> mvOutlierKeys;
         vector<MapPoint *> mvpOutlierMPs;
 
+        std::vector<Edge> mvEdges;
+        std::vector<BezierCurve> mvBezierCurves;
+        
         map<long unsigned int, cv::Point2f> mmProjectPoints;
         map<long unsigned int, cv::Point2f> mmMatchedInImage;
     };

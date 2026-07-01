@@ -83,6 +83,18 @@ namespace ORB_SLAM3
         mspMapPoints.insert(pMP);
     }
 
+    void Map::AddMapBezier(MapBezier *pMB)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapBeziers.insert(pMB);
+    }
+
+    void Map::EraseMapBezier(MapBezier *pMB)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapBeziers.erase(pMB);
+    }
+
     void Map::SetImuInitialized()
     {
         unique_lock<mutex> lock(mMutexMap);
@@ -174,6 +186,12 @@ namespace ORB_SLAM3
         return mvpReferenceMapPoints;
     }
 
+    std::vector<MapBezier *> Map::GetAllMapBeziers()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return std::vector<MapBezier *>(mspMapBeziers.begin(), mspMapBeziers.end());
+    }
+
     long unsigned int Map::GetId()
     {
         return mnId;
@@ -225,6 +243,7 @@ namespace ORB_SLAM3
 
         mspMapPoints.clear();
         mspKeyFrames.clear();
+        mspMapBeziers.clear();
         mnMaxKFid = mnInitKFid;
         mbImuInitialized = false;
         mvpReferenceMapPoints.clear();
@@ -276,6 +295,16 @@ namespace ORB_SLAM3
             MapPoint *pMP = *sit;
             pMP->SetWorldPos(s * Ryw * pMP->GetWorldPos() + tyw);
             pMP->UpdateNormalAndDepth();
+        }
+        for (set<MapBezier *>::iterator sit = mspMapBeziers.begin(); sit != mspMapBeziers.end(); sit++)
+        {
+            MapBezier *pMB = *sit;
+            std::vector<Eigen::Vector3f> vWorldPoints = pMB->GetWorldPoints();
+            for (size_t i = 0; i < vWorldPoints.size(); i++)
+            {
+                vWorldPoints[i] = s * Ryw * vWorldPoints[i] + tyw;
+            }
+            pMB->SetWorldPoints(vWorldPoints);
         }
         mnMapChange++;
     }

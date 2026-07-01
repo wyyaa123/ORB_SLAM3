@@ -615,6 +615,10 @@ namespace ORB_SLAM3
         mMaxFrames = settings->fps();
         mbRGB = settings->rgb();
         mEdgeSampleSize = settings->edgeSampleSize();
+        mEdgeMinDepth = settings->edgeMinDepth();
+        mEdgeCullMinDepth = settings->edgeCullMinDepth();
+        mEdgeMaxDepth = settings->edgeMaxDepth();
+        mEdgeMinValidRatio = settings->edgeMinValidRatio();
 
         // ORB parameters
         int nFeatures = settings->nFeatures();
@@ -645,8 +649,6 @@ namespace ORB_SLAM3
         mpImuCalib = new IMU::Calib(Tbc, Ng * sf, Na * sf, Ngw / sf, Naw / sf);
 
         mpImuPreintegratedFromLastKF = new IMU::Preintegrated(IMU::Bias(), *mpImuCalib);
-
-        
     }
 
     bool Tracking::ParseCamParamFile(cv::FileStorage &fSettings)
@@ -2473,6 +2475,34 @@ namespace ORB_SLAM3
                         mCurrentFrame.mvpMapPoints[i] = pNewMP;
                     }
                 }
+
+                const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
+                const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
+                for (int i = 0; i < mCurrentFrame.mvBezierCurves.size(); i++)
+                {
+                    vector<Eigen::Vector3f> bezier3D;
+                    const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
+                    for (const orderedEdgePoint &point : curve.sampledPoints)
+                    {
+                        if (point.depth <= 0.0f || point.score_depth <= 0.0f)
+                            continue;
+
+                        const Eigen::Vector3f pc(point.x_3d, point.y_3d, point.z_3d);
+                        bezier3D.push_back(Rwc * pc + Ow);
+                    }
+
+                    if (bezier3D.size() < 2)
+                        continue;
+
+                    MapBezier *pNewMB = new MapBezier(bezier3D, pKFini, mpAtlas->GetCurrentMap());
+                    pNewMB->AddObservation(pKFini, i);
+                    pKFini->AddMapBezier(pNewMB, i);
+                    //
+                    //
+                    mpAtlas->AddMapBezier(pNewMB);
+
+                    mCurrentFrame.mvpMapBeziers[i] = pNewMB;
+                }
             }
             else
             {
@@ -3415,6 +3445,56 @@ namespace ORB_SLAM3
                     }
                 }
                 // Verbose::PrintMess("new mps for stereo KF: " + to_string(nPoints), Verbose::VERBOSITY_NORMAL);
+            }
+
+            int nBeziers = 0;
+            int maxBezier = 200;
+            for (int i = 0; i < mCurrentFrame.mvBezierCurves.size(); ++i)
+            {
+                bool bCreateNew = false;
+
+                MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
+                if (!pMB)
+                    bCreateNew = true;
+                else if (pMB->Observations() < 1)
+                {
+                    bCreateNew = true;
+                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                }
+
+                const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
+                const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
+                if (bCreateNew)
+                {
+                    vector<Eigen::Vector3f> bezier3D;
+                    const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
+                    for (const orderedEdgePoint &point : curve.sampledPoints)
+                    {
+                        if (point.depth <= 0.0f || point.score_depth <= 0.0f)
+                            continue;
+
+                        const Eigen::Vector3f pc(point.x_3d, point.y_3d, point.z_3d);
+                        bezier3D.push_back(Rwc * pc + Ow);
+                    }
+
+                    MapBezier *pNewMB = new MapBezier(bezier3D, pKF, mpAtlas->GetCurrentMap());
+                    pNewMB->AddObservation(pKF, i);
+                    pKF->AddMapBezier(pNewMB, i);
+                    pKF->mvBezierCurves = mCurrentFrame.mvBezierCurves;
+                    //
+                    //
+                    mpAtlas->AddMapBezier(pNewMB);
+
+                    mCurrentFrame.mvpMapBeziers[i] = pNewMB;
+                    nBeziers++;
+                }
+                else
+                {
+                    nBeziers++;
+                }
+
+                if (nBeziers > maxBezier)
+                    break;
             }
         }
 
