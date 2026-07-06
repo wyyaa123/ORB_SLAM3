@@ -80,12 +80,14 @@ public:
     void EraseMapBezier(MapBezier* pMB);
     void EraseKeyFrame(KeyFrame* pKF);
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
+    void SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs);
     void InformNewBigChange();
     int GetLastBigChangeIdx();
 
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
+    std::vector<MapBezier *> GetReferenceMapBeziers();
     std::vector<MapBezier*> GetAllMapBeziers();
 
     long unsigned int MapPointsInMap();
@@ -178,6 +180,7 @@ protected:
     unsigned long int mnBackupKFlowerID;
 
     std::vector<MapPoint*> mvpReferenceMapPoints;
+    std::vector<MapBezier*> mvpReferenceMapBeziers;
 
     bool mbImuInitialized;
 

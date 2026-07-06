@@ -403,8 +403,8 @@ namespace ORB_SLAM3
 
             for (size_t k = 1; k < curve.sampledPoints.size(); ++k)
             {
-                cv::Point p0(cvRound(curve.sampledPoints[k - 1].x), cvRound(curve.sampledPoints[k - 1].y));
-                cv::Point p1(cvRound(curve.sampledPoints[k].x), cvRound(curve.sampledPoints[k].y));
+                cv::Point p0(cvRound(curve.sampledPoints[k - 1].x()), cvRound(curve.sampledPoints[k - 1].y()));
+                cv::Point p1(cvRound(curve.sampledPoints[k].x()), cvRound(curve.sampledPoints[k].y()));
                 if (cv::clipLine(image_viz.size(), p0, p1))
                     cv::line(image_viz, p0, p1, curveColor, 2, cv::LINE_AA);
             }

@@ -19,6 +19,7 @@
 #include "Tracking.h"
 
 #include "ORBmatcher.h"
+#include "EdgeMatcher.h"
 #include "FrameDrawer.h"
 #include "Converter.h"
 #include "G2oTypes.h"
@@ -28,6 +29,8 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 
 #include <mutex>
@@ -37,6 +40,93 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
+    namespace
+    {
+        bool BackProjectBezierSample(const Frame &frame,
+                                     const Eigen::Vector2f &samplePoint,
+                                     Eigen::Vector3f &cameraPoint)
+        {
+            if (frame.mImgDepth.empty())
+                return false;
+
+            const int xIdx = cvRound(samplePoint.x());
+            const int yIdx = cvRound(samplePoint.y());
+
+            if (xIdx < 0 || xIdx >= frame.mImgDepth.cols ||
+                yIdx < 0 || yIdx >= frame.mImgDepth.rows)
+            {
+                return false;
+            }
+
+            const float depthOrig = frame.mImgDepth.at<float>(yIdx, xIdx);
+            std::vector<float> validDepthList;
+
+            for (int xBias = -2; xBias <= 2; ++xBias)
+            {
+                for (int yBias = -2; yBias <= 2; ++yBias)
+                {
+                    const int currXIdx = xIdx + xBias;
+                    const int currYIdx = yIdx + yBias;
+
+                    if (currXIdx < Frame::mnMinX || currXIdx >= Frame::mnMaxX ||
+                        currYIdx < Frame::mnMinY || currYIdx >= Frame::mnMaxY)
+                    {
+                        continue;
+                    }
+
+                    const float depth = frame.mImgDepth.at<float>(currYIdx, currXIdx);
+                    if (depth > 0.02f && depth < 5.0f)
+                        validDepthList.push_back(depth);
+                }
+            }
+
+            if (validDepthList.size() < 8)
+                return false;
+
+            std::sort(validDepthList.begin(), validDepthList.end());
+
+            std::vector<float> adjustedDepthList;
+            adjustedDepthList.reserve(validDepthList.size());
+            const float relativeThreshold = 0.05f;
+            size_t firstJump = validDepthList.size();
+            for (size_t i = 1; i < validDepthList.size(); ++i)
+            {
+                const float delta = validDepthList[i] - validDepthList[i - 1];
+                const float base = validDepthList[i - 1];
+                const float relativeChange = delta / base;
+
+                if (std::fabs(relativeChange) > relativeThreshold)
+                {
+                    firstJump = i;
+                    break;
+                }
+            }
+
+            adjustedDepthList.assign(validDepthList.begin(),
+                                     validDepthList.begin() + firstJump);
+            if (adjustedDepthList.empty())
+                return false;
+
+            const size_t partitionSize = adjustedDepthList.size();
+            const float medianDepth = (partitionSize % 2 == 0)
+                                          ? 0.5f * (adjustedDepthList[partitionSize / 2 - 1] +
+                                                    adjustedDepthList[partitionSize / 2])
+                                          : adjustedDepthList[partitionSize / 2];
+
+            const float adjustedDepth =
+                depthOrig >= adjustedDepthList.front() && depthOrig <= adjustedDepthList.back()
+                    ? depthOrig
+                    : medianDepth;
+
+            if (adjustedDepth <= 0.02f || adjustedDepth >= 5.0f)
+                return false;
+
+            cameraPoint = Eigen::Vector3f((samplePoint.x() - Frame::cx) * Frame::invfx * adjustedDepth,
+                                          (samplePoint.y() - Frame::cy) * Frame::invfy * adjustedDepth,
+                                          adjustedDepth);
+            return true;
+        }
+    }
 
     Tracking::Tracking(System *pSys, ORBVocabulary *pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Atlas *pAtlas, KeyFrameDatabase *pKFDB, const string &strSettingPath, const int sensor, Settings *settings, const string &_nameSeq) : mState(NO_IMAGES_YET), mSensor(sensor), mTrackedFr(0), mbStep(false),
                                                                                                                                                                                                                                                   mbOnlyTracking(false), mbMapUpdated(false), mbVO(false), mpORBVocabulary(pVoc), mpKeyFrameDB(pKFDB),
@@ -2478,16 +2568,16 @@ namespace ORB_SLAM3
 
                 const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
                 const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
-                for (int i = 0; i < mCurrentFrame.mvBezierCurves.size(); i++)
+                for (int i = 0; i < mCurrentFrame.NB; i++)
                 {
                     vector<Eigen::Vector3f> bezier3D;
                     const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
-                    for (const orderedEdgePoint &point : curve.sampledPoints)
+                    for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
                     {
-                        if (point.depth <= 0.0f || point.score_depth <= 0.0f)
+                        Eigen::Vector3f pc;
+                        if (!BackProjectBezierSample(mCurrentFrame, samplePoint, pc))
                             continue;
 
-                        const Eigen::Vector3f pc(point.x_3d, point.y_3d, point.z_3d);
                         bezier3D.push_back(Rwc * pc + Ow);
                     }
 
@@ -2819,6 +2909,20 @@ namespace ORB_SLAM3
                 }
             }
         }
+
+        for (int i = 0; i < mLastFrame.NB; i++)
+        {
+            MapBezier *pMB = mLastFrame.mvpMapBeziers[i];
+
+            if (pMB)
+            {
+                MapBezier *pRep = pMB->GetReplaced();
+                if (pRep)
+                {
+                    mLastFrame.mvpMapBeziers[i] = pRep;
+                }
+            }
+        }
     }
 
     bool Tracking::TrackReferenceKeyFrame()
@@ -2841,6 +2945,13 @@ namespace ORB_SLAM3
 
         mCurrentFrame.mvpMapPoints = vpMapPointMatches;
         mCurrentFrame.SetPose(mLastFrame.GetPose());
+
+        BezierMatcher bezierMatcher;
+        vector<MapBezier *> vpMapBezierMatches;
+
+        int nBezierMatches = bezierMatcher.SearchByProjection(mpReferenceKF, mCurrentFrame, vpMapBezierMatches);
+        // 当前帧的第i条贝塞尔曲线对应的地图贝塞尔曲线
+        mCurrentFrame.mvpMapBeziers = vpMapBezierMatches;
 
         // mCurrentFrame.PrintPointDistribution();
 
@@ -3068,7 +3179,10 @@ namespace ORB_SLAM3
         mTrackedFr++;
 
         UpdateLocalMap();
-        SearchLocalPoints();
+        thread threadPoints(&Tracking::SearchLocalPoints, this);
+        thread threadBezier(&Tracking::SearchLocalBeziers, this);
+        threadPoints.join();
+        threadBezier.join();
 
         // TOO check outliers before PO
         // int aux1 = 0, aux2 = 0;
@@ -3449,7 +3563,7 @@ namespace ORB_SLAM3
 
             int nBeziers = 0;
             int maxBezier = 200;
-            for (int i = 0; i < mCurrentFrame.mvBezierCurves.size(); ++i)
+            for (int i = 0; i < mCurrentFrame.NB; ++i)
             {
                 bool bCreateNew = false;
 
@@ -3468,19 +3582,22 @@ namespace ORB_SLAM3
                 {
                     vector<Eigen::Vector3f> bezier3D;
                     const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
-                    for (const orderedEdgePoint &point : curve.sampledPoints)
+                    for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
                     {
-                        if (point.depth <= 0.0f || point.score_depth <= 0.0f)
+                        Eigen::Vector3f pc;
+                        if (!BackProjectBezierSample(mCurrentFrame, samplePoint, pc))
+                        {
+                            spdlog::warn("Invalid depth for bezier point, skipping");
                             continue;
+                        }
 
-                        const Eigen::Vector3f pc(point.x_3d, point.y_3d, point.z_3d);
                         bezier3D.push_back(Rwc * pc + Ow);
                     }
 
                     MapBezier *pNewMB = new MapBezier(bezier3D, pKF, mpAtlas->GetCurrentMap());
                     pNewMB->AddObservation(pKF, i);
                     pKF->AddMapBezier(pNewMB, i);
-                    pKF->mvBezierCurves = mCurrentFrame.mvBezierCurves;
+                    // pKF->mvBezierCurves = mCurrentFrame.mvBezierCurves;
                     //
                     //
                     mpAtlas->AddMapBezier(pNewMB);
@@ -3579,6 +3696,84 @@ namespace ORB_SLAM3
             int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapPoints, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
         }
     }
+
+    void Tracking::SearchLocalBeziers()
+    {
+    }
+
+    // void Tracking::SearchLocalBeziers()
+    // {
+    //     // Do not search map points already matched
+    //     for (vector<MapBezier *>::iterator vit = mCurrentFrame.mvpMapBeziers.begin(), vend = mCurrentFrame.mvpMapBeziers.end(); vit != vend; vit++)
+    //     {
+    //         MapBezier *pMB = *vit;
+    //         if (pMB)
+    //         {
+    //             if (pMB->isBad())
+    //             {
+    //                 *vit = static_cast<MapBezier *>(NULL);
+    //             }
+    //             else
+    //             {
+    //                 pMB->IncreaseVisible();
+    //                 pMB->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+    //                 pMB->mbTrackInView = false;
+    //             }
+    //         }
+    //     }
+
+    //     int nToMatch = 0;
+
+    //     // Project points in frame and check its visibility
+    //     for (vector<MapBezier *>::iterator vit = mvpLocalMapBeziers.begin(), vend = mvpLocalMapBeziers.end(); vit != vend; vit++)
+    //     {
+    //         MapBezier *pMB = *vit;
+
+    //         if (pMB->mnTrackReferenceForFrame == mCurrentFrame.mnId)
+    //             continue;
+    //         if (pMB->isBad())
+    //             continue;
+    //         // Project (this fills MapBezier variables for matching)
+    //         if (mCurrentFrame.isInFrustum(pMB))
+    //         {
+    //             pMB->IncreaseVisible();
+    //             nToMatch++;
+    //         }
+    //         if (pMB->mbTrackInView)
+    //         {
+    //             mCurrentFrame.mmProjectPoints[pMB->mnId] = cv::Point2f(pMB->mTrackProjX, pMB->mTrackProjY);
+    //         }
+    //     }
+
+    //     if (nToMatch > 0)
+    //     {
+    //         ORBmatcher matcher(0.8);
+    //         int th = 1;
+    //         if (mSensor == System::RGBD || mSensor == System::IMU_RGBD)
+    //             th = 3;
+    //         if (mpAtlas->isImuInitialized())
+    //         {
+    //             if (mpAtlas->GetCurrentMap()->GetIniertialBA2())
+    //                 th = 2;
+    //             else
+    //                 th = 6;
+    //         }
+    //         else if (!mpAtlas->isImuInitialized() && (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
+    //         {
+    //             th = 10;
+    //         }
+
+    //         // If the camera has been relocalised recently, perform a coarser search
+    //         if (mCurrentFrame.mnId < mnLastRelocFrameId + 2)
+    //             th = 5;
+
+    //         if (mState == LOST || mState == RECENTLY_LOST) // Lost for less than 1 second
+    //             th = 15;                                   // 15
+
+    //         int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapBeziers, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
+    //     }
+    // }
+
     // 1、把当前局部地图点交给 Atlas，用于显示
     // 2、更新局部关键帧和局部地图点
     // 3、填充mvpLocalKeyFrames并找出与当前帧观测到的特征点数量最多的关键帧作为mpReferenceKF参考关键帧候选
@@ -3586,10 +3781,12 @@ namespace ORB_SLAM3
     {
         // This is for visualization
         mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
+        mpAtlas->SetReferenceMapBeziers(mvpLocalMapBeziers);
 
         // Update
         UpdateLocalKeyFrames();
         UpdateLocalPoints();
+        UpdateLocalBeziers();
     }
 
     // 根据mvpLocalKeyFrames中的关键帧，找出这些关键帧观测到的地图点，并把这些地图点加入mvpLocalMapPoints中
@@ -3617,6 +3814,35 @@ namespace ORB_SLAM3
                     ++count_pts;
                     mvpLocalMapPoints.push_back(pMP);
                     pMP->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                }
+            }
+        }
+    }
+
+    void Tracking::UpdateLocalBeziers()
+    {
+        mvpLocalMapBeziers.clear();
+
+        int count_pts = 0;
+
+        for (vector<KeyFrame *>::const_reverse_iterator itKF = mvpLocalKeyFrames.rbegin(), itEndKF = mvpLocalKeyFrames.rend(); itKF != itEndKF; ++itKF)
+        {
+            KeyFrame *pKF = *itKF;
+            const vector<MapBezier *> vpMPs = pKF->GetMapBezierMatches();
+
+            for (vector<MapBezier *>::const_iterator itMP = vpMPs.begin(), itEndMP = vpMPs.end(); itMP != itEndMP; itMP++)
+            {
+
+                MapBezier *pMB = *itMP;
+                if (!pMB)
+                    continue;
+                if (pMB->mnTrackReferenceForFrame == mCurrentFrame.mnId)
+                    continue;
+                if (!pMB->isBad())
+                {
+                    ++count_pts;
+                    mvpLocalMapBeziers.push_back(pMB);
+                    pMB->mnTrackReferenceForFrame = mCurrentFrame.mnId;
                 }
             }
         }

@@ -259,8 +259,13 @@ void edgeExtracter::getBezierSampledPoints(int sampleSpacing)
     mvBezierCurves.reserve(mvEdges.size());
     for (auto &edge : mvEdges)
     {
+        std::vector<Eigen::Vector2f> edgePoints;
+        edgePoints.reserve(edge.mvPoints.size());
+        for (const orderedEdgePoint &point : edge.mvPoints)
+            edgePoints.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
+
         // 生成贝塞尔曲线控制点
-        const std::vector<BezierCurve> fittedCurves = bezierFitter.fitAdaptive(edge.mvPoints);
+        const std::vector<BezierCurve> fittedCurves = bezierFitter.fitAdaptive(edgePoints);
         for (BezierCurve curve : fittedCurves)
         {
             if (curve.controlPoints.size() < 2)

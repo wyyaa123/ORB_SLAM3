@@ -92,6 +92,34 @@ namespace ORB_SLAM3
         g2o::SE3Quat mTrl;
     };
 
+    class EdgeSE3ProjectBezierPointOnlyPose : public g2o::BaseUnaryEdge<1, Eigen::Vector2d, g2o::VertexSE3Expmap>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeSE3ProjectBezierPointOnlyPose();
+
+        bool read(std::istream &is) override;
+
+        bool write(std::ostream &os) const override;
+
+        void computeError() override;
+
+        bool isDepthPositive() const;
+
+        void linearizeOplus() override;
+
+        // Fixed world point sampled from the 3-D map curve.
+        Eigen::Vector3d Xw;
+
+        // Image-space normal of the matched 2-D curve at _measurement.
+        // computeError() and linearizeOplus() normalize it before use.
+        Eigen::Vector2d normal;
+
+        // The camera model is owned by Frame/KeyFrame and must outlive this edge.
+        GeometricCamera *pCamera;
+    };
+
     class EdgeSE3ProjectXYZ : public g2o::BaseBinaryEdge<2, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>
     {
     public:

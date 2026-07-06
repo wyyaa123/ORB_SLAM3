@@ -1,5 +1,5 @@
-#ifndef MAPEDGE_H
-#define MAPEDGE_H
+#ifndef MAPBEZIER_H
+#define MAPBEZIER_H
 
 #include "KeyFrame.h"
 #include "Frame.h"
@@ -53,14 +53,21 @@ namespace ORB_SLAM3
 
         int nObs;
 
+        bool mbTrackInView;
+        float mTrackProjX;
+        float mTrackProjY;
+        long unsigned int mnTrackReferenceForFrame;
+
+        long unsigned int mnBALocalForMerge;
     protected:
         std::vector<Eigen::Vector3f> mvWorldPoints;
         std::map<KeyFrame *, int> mObservations;
+        std::vector<Eigen::Vector2f> mvControlPoints; // Control points for the Bezier curve
 
         KeyFrame *mpRefKF;
         Map *mpMap;
 
-        bool mbBad = false;
+        bool mbBad;
         MapBezier *mpReplaced;
 
         long int mnFirstKFid;
@@ -78,4 +85,4 @@ namespace ORB_SLAM3
     };
 }
 
-#endif // MAPEDGE_H
+#endif // MAPBEZIER_H

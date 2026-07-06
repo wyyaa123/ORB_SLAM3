@@ -6,6 +6,8 @@
 #include "Map.h"
 #include "MapBezier.h"
 
+#include <unordered_set>
+
 namespace ORB_SLAM3
 {
     class KeyFrame;
@@ -18,17 +20,17 @@ namespace ORB_SLAM3
     public:
         BezierMatcher();
 
-        int SearchByProjection(
-            Frame &currentFrame,
-            const std::vector<MapBezier *> &candidates);
+        int SearchByProjection(Frame &currentFrame, const Frame &lastFrame);
 
-        int SearchFromLastFrame(
-            Frame &currentFrame,
-            const Frame &lastFrame);
+        int SearchByProjection(KeyFrame *pKF, Frame &currentFrame, std::vector<MapBezier *> &vpMapBezierMatches);
 
-        int Fuse(
-            KeyFrame *targetKF,
-            const std::vector<MapBezier *> &candidates);
+        int SearchByProjection(Frame &F, const std::vector<MapBezier *> &vpMapBeziers);
+
+        int SearchByProjection(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapBezier *> &vpBeziers, std::vector<MapBezier *> &vpMatched);
+
+        int Fuse(KeyFrame *targetKF, const std::vector<MapBezier *> &vpMapBeziers);
+
+        int Fuse(KeyFrame* pKF, cv::Mat Scw, const std::vector<MapBezier*> &vpBeziers, float th, vector<MapBezier *> &vpReplaceBeziers);
     };
 } // namespace ORB_SLAM3
 

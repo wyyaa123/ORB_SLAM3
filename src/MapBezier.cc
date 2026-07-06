@@ -6,8 +6,8 @@ namespace ORB_SLAM3
     long unsigned int MapBezier::nNextId = 0;
     std::mutex MapBezier::mGlobalMutex;
 
-    MapBezier::MapBezier(const std::vector<Eigen::Vector3f> &vWorldPoints, KeyFrame *pRefKF, Map *pMap) : mnFirstKFid(pRefKF->mnId), mnFirstFrame(pRefKF->mnFrameId), nObs(0), mbBad(false),
-                                                                                                          mpRefKF(pRefKF), mpMap(pMap), mnOriginMapId(pMap->GetId()), mpReplaced(nullptr), 
+    MapBezier::MapBezier(const std::vector<Eigen::Vector3f> &vWorldPoints, KeyFrame *pRefKF, Map *pMap) : mnFirstKFid(pRefKF->mnId), mnFirstFrame(pRefKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mbBad(false),
+                                                                                                          mpRefKF(pRefKF), mpMap(pMap), mnOriginMapId(pMap->GetId()), mpReplaced(nullptr),
                                                                                                           mnVisible(1), mnFound(1)
     {
         SetWorldPoints(vWorldPoints);

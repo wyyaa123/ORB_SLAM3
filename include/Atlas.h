@@ -95,11 +95,12 @@ public:
 
     /* All methods without Map pointer work on current map */
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
+    void SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs);
     void InformNewBigChange();
     int GetLastBigChangeIdx();
 
     long unsigned int MapPointsInMap();
-    long unsigned KeyFramesInMap();
+    long unsigned int KeyFramesInMap();
 
     // Method for get data in current map
     std::vector<KeyFrame*> GetAllKeyFrames();

@@ -18,6 +18,8 @@
 
 #include "OptimizableTypes.h"
 
+#include <cassert>
+
 namespace ORB_SLAM3
 {
     bool EdgeSE3ProjectXYZOnlyPose::read(std::istream &is)
@@ -62,9 +64,9 @@ namespace ORB_SLAM3
         double z = xyz_trans[2];
 
         Eigen::Matrix<double, 3, 6> SE3deriv;
-        SE3deriv << 0.f,   z,  -y, 1.f, 0.f, 0.f,
-                     -z, 0.f,   x, 0.f, 1.f, 0.f,
-                      y,  -x, 0.f, 0.f, 0.f, 1.f;
+        SE3deriv << 0.f, z, -y, 1.f, 0.f, 0.f,
+            -z, 0.f, x, 0.f, 1.f, 0.f,
+            y, -x, 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXi = -pCamera->projectJac(xyz_trans) * SE3deriv;
     }
@@ -113,9 +115,9 @@ namespace ORB_SLAM3
         double z_w = X_l[2];
 
         Eigen::Matrix<double, 3, 6> SE3deriv;
-        SE3deriv << 0.f,   z_w, -y_w, 1.f, 0.f, 0.f,
-                     -z_w, 0.f,   x_w, 0.f, 1.f, 0.f,
-                      y_w,  -x_w, 0.f, 0.f, 0.f, 1.f;
+        SE3deriv << 0.f, z_w, -y_w, 1.f, 0.f, 0.f,
+            -z_w, 0.f, x_w, 0.f, 1.f, 0.f,
+            y_w, -x_w, 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXi = -pCamera->projectJac(X_r) * mTrl.rotation().toRotationMatrix() * SE3deriv;
     }
@@ -363,6 +365,99 @@ namespace ORB_SLAM3
             {
                 os << " " << information()(i, j);
             }
+        return os.good();
+    }
+
+    EdgeSE3ProjectBezierPointOnlyPose::EdgeSE3ProjectBezierPointOnlyPose()
+        : Xw(Eigen::Vector3d::Zero()),
+          normal(Eigen::Vector2d::Zero()),
+          pCamera(nullptr)
+    {
+        information().setIdentity();
+    }
+
+    void EdgeSE3ProjectBezierPointOnlyPose::computeError()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(pCamera != nullptr);
+
+        const auto *v =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
+        const Eigen::Vector3d Xc = v->estimate().map(Xw);
+
+        const double normalNorm = normal.norm();
+        assert(normalNorm > 1e-12);
+        if (normalNorm <= 1e-12)
+        {
+            _error.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d projected = pCamera->project(Xc);
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+
+        // _measurement is the closest point on the observed image curve.
+        _error[0] = unitNormal.dot(projected - _measurement);
+    }
+
+    bool EdgeSE3ProjectBezierPointOnlyPose::isDepthPositive() const
+    {
+        assert(_vertices[0] != nullptr);
+
+        const auto *v =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
+        return v->estimate().map(Xw).z() > 0.0;
+    }
+
+    void EdgeSE3ProjectBezierPointOnlyPose::linearizeOplus()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(pCamera != nullptr);
+
+        const auto *v =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
+        const Eigen::Vector3d Xc = v->estimate().map(Xw);
+
+        const double x = Xc.x();
+        const double y = Xc.y();
+        const double z = Xc.z();
+
+        Eigen::Matrix<double, 3, 6> Jse3;
+        Jse3 << 0, z, -y, 1, 0, 0,
+            -z, 0, x, 0, 1, 0,
+            y, -x, 0, 0, 0, 1;
+
+        const double normalNorm = normal.norm();
+        assert(normalNorm > 1e-12);
+        if (normalNorm <= 1e-12)
+        {
+            _jacobianOplusXi.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+        _jacobianOplusXi =
+            unitNormal.transpose() * pCamera->projectJac(Xc) * Jse3;
+    }
+
+    bool EdgeSE3ProjectBezierPointOnlyPose::read(std::istream &is)
+    {
+        is >> _measurement[0] >> _measurement[1]
+           >> information()(0, 0)
+           >> Xw[0] >> Xw[1] >> Xw[2]
+           >> normal[0] >> normal[1];
+
+        // pCamera cannot be serialized and must be restored by the caller.
+        return static_cast<bool>(is);
+    }
+
+    bool EdgeSE3ProjectBezierPointOnlyPose::write(std::ostream &os) const
+    {
+        os << measurement()[0] << " "
+           << measurement()[1] << " "
+           << information()(0, 0) << " "
+           << Xw[0] << " " << Xw[1] << " " << Xw[2] << " "
+           << normal[0] << " " << normal[1];
         return os.good();
     }
 

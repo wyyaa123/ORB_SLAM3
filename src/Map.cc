@@ -186,6 +186,18 @@ namespace ORB_SLAM3
         return mvpReferenceMapPoints;
     }
 
+    void Map::SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mvpReferenceMapBeziers = vpMBs;
+    }
+
+    vector<MapBezier *> Map::GetReferenceMapBeziers()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return mvpReferenceMapBeziers;
+    }
+
     std::vector<MapBezier *> Map::GetAllMapBeziers()
     {
         unique_lock<mutex> lock(mMutexMap);

@@ -215,10 +215,12 @@ namespace ORB_SLAM3
 
         void UpdateLocalMap();
         void UpdateLocalPoints();
+        void UpdateLocalBeziers();
         void UpdateLocalKeyFrames();
 
         bool TrackLocalMap();
         void SearchLocalPoints();
+        void SearchLocalBeziers();
 
         bool NeedNewKeyFrame();
         void CreateNewKeyFrame();
@@ -273,6 +275,7 @@ namespace ORB_SLAM3
         KeyFrame *mpReferenceKF;
         std::vector<KeyFrame *> mvpLocalKeyFrames;
         std::vector<MapPoint *> mvpLocalMapPoints;
+        std::vector<MapBezier *> mvpLocalMapBeziers;
 
         // System
         System *mpSystem;

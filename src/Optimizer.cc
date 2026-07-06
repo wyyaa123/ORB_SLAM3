@@ -995,6 +995,61 @@ namespace ORB_SLAM3
             }
         }
 
+        const int NB = pFrame->NB;
+
+        vector<ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose *> vpEdgesBezier;
+        vector<size_t> vnIndexEdgeBezier;
+        vpEdgesBezier.reserve(NB);
+        vnIndexEdgeBezier.reserve(NB);
+
+        {
+            unique_lock<mutex> lock(MapBezier::mGlobalMutex);
+
+            for (int i = 0; i < NB; i++)
+            {
+                MapBezier *pMB = pFrame->mvpMapBeziers[i];
+                // 如果pMB不为空，证明其与当前帧有对应关系，说明当前帧观测到了该Bezier曲线
+                if (pMB)
+                {
+                    nInitialCorrespondences++;
+                    pFrame->mvbBezierOutlier[i] = false;
+
+                    int sampleNum = pMB->GetWorldPoints().size();
+                    vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+                    BezierCurve bezier = pFrame->mvBezierCurves[i];
+                    
+                    for (int j = 0; j < sampleNum; ++j)
+                    {
+                        Eigen::Vector2f uv = pFrame->mpCamera->project(worldPoints[j]);
+                    }
+                    
+
+                    // Eigen::Matrix<double, 2, 1> obs;
+                    // const orderedEdgePoint& 
+                    // obs << kpUn.pt.x, kpUn.pt.y;
+
+                    // ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose *e = new ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose();
+
+                    // e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+                    // e->setMeasurement(obs);
+                    // const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
+                    // e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
+
+                    // g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                    // e->setRobustKernel(rk);
+                    // rk->setDelta(deltaMono);
+
+                    // e->pCamera = pFrame->mpCamera;
+                    // e->Xw = pMB->GetWorldPos().cast<double>();
+
+                    // optimizer.addEdge(e);
+
+                    // vpEdgesBezier.push_back(e);
+                    // vnIndexEdgeBezier.push_back(i);
+                }
+            }
+        }
+
         if (nInitialCorrespondences < 3)
             return 0;
 
@@ -3487,6 +3542,7 @@ namespace ORB_SLAM3
         bool bShowImages = false;
 
         vector<MapPoint *> vpMPs;
+        vector<MapBezier *> vpMBs;
 
         g2o::SparseOptimizer optimizer;
         g2o::BlockSolver_6_3::LinearSolverType *linearSolver;
@@ -3510,6 +3566,7 @@ namespace ORB_SLAM3
 
         // Set fixed KeyFrame vertices
         int numInsertedPoints = 0;
+        int numInsertedBeziers = 0;
         for (KeyFrame *pKFi : vpFixedKF)
         {
             if (pKFi->isBad() || pKFi->GetMap() != pCurrentMap)
@@ -3543,12 +3600,26 @@ namespace ORB_SLAM3
                         }
             }
 
+            set<MapBezier *> spViewMBs = pKFi->GetMapBeziers();
+            for (MapBezier *pMBi : spViewMBs)
+            {
+                if (pMBi)
+                    if (!pMBi->isBad() && pMBi->GetMap() == pCurrentMap)
+                        if (pMBi->mnBALocalForMerge != pMainKF->mnId)
+                        {
+                            vpMBs.push_back(pMBi);
+                            pMBi->mnBALocalForMerge = pMainKF->mnId;
+                            numInsertedBeziers++;
+                        }
+            }
+
             spKeyFrameBA.insert(pKFi);
         }
 
         // Set non fixed Keyframe vertices
         set<KeyFrame *> spAdjustKF(vpAdjustKF.begin(), vpAdjustKF.end());
         numInsertedPoints = 0;
+        numInsertedBeziers = 0;
         for (KeyFrame *pKFi : vpAdjustKF)
         {
             if (pKFi->isBad() || pKFi->GetMap() != pCurrentMap)
@@ -3576,6 +3647,23 @@ namespace ORB_SLAM3
                             vpMPs.push_back(pMPi);
                             pMPi->mnBALocalForMerge = pMainKF->mnId;
                             numInsertedPoints++;
+                        }
+                    }
+                }
+            }
+
+            set<MapBezier *> spViewMBs = pKFi->GetMapBeziers();
+            for (MapBezier *pMBi : spViewMBs)
+            {
+                if (pMBi)
+                {
+                    if (!pMBi->isBad() && pMBi->GetMap() == pCurrentMap)
+                    {
+                        if (pMBi->mnBALocalForMerge != pMainKF->mnId)
+                        {
+                            vpMBs.push_back(pMBi);
+                            pMBi->mnBALocalForMerge = pMainKF->mnId;
+                            numInsertedBeziers++;
                         }
                     }
                 }
@@ -3925,6 +4013,16 @@ namespace ORB_SLAM3
             pMPi->SetWorldPos(vPoint->estimate().cast<float>());
             pMPi->UpdateNormalAndDepth();
         }
+
+        // for (MapBezier *pMBi : vpMBs)
+        // {
+        //     if (pMBi->isBad())
+        //         continue;
+
+        //     g2o::VertexBezier *vBezier = static_cast<g2o::VertexBezier *>(optimizer.vertex(pMBi->mnId + maxKFid + 1));
+        //     pMBi->SetControlPoints(vBezier->estimate().cast<float>());
+        //     pMBi->UpdateNormalAndDepth();
+        // }
     }
 
     void Optimizer::MergeInertialBA(KeyFrame *pCurrKF, KeyFrame *pMergeKF, bool *pbStopFlag, Map *pMap, LoopClosing::KeyFrameAndPose &corrPoses)

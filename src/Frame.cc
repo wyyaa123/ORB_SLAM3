@@ -19,6 +19,7 @@
 #include "Frame.h"
 
 #include "G2oTypes.h"
+#include "MapBezier.h"
 #include "MapPoint.h"
 #include "KeyFrame.h"
 #include "ORBextractor.h"
@@ -73,7 +74,8 @@ namespace ORB_SLAM3
           mvRightToLeftMatch(frame.mvRightToLeftMatch), mvStereo3Dpoints(frame.mvStereo3Dpoints),
           mTlr(frame.mTlr), mRlr(frame.mRlr), mtlr(frame.mtlr), mTrl(frame.mTrl), mImgLeft(frame.mImgLeft.clone()), mTcw(frame.mTcw), mbHasPose(false), mbHasVelocity(false),
           mvBezierCurves(frame.mvBezierCurves), mvpMapBeziers(frame.mvpMapBeziers), mvEdges(frame.mvEdges), mImgDepth(frame.mImgDepth.clone()), mImgSem(frame.mImgSem.clone()),
-          mmIndexMap(frame.mmIndexMap), mMatSearch(frame.mMatSearch.clone())
+          mmIndexMap(frame.mmIndexMap), mMatSearch(frame.mMatSearch.clone()), NB(frame.NB), mvbBezierOutlier(frame.mvbBezierOutlier),
+          mnBezierInlierCurves(frame.mnBezierInlierCurves), mbBezierOutliersValid(frame.mbBezierOutliersValid)
     {
         for (int i = 0; i < FRAME_GRID_COLS; i++)
             for (int j = 0; j < FRAME_GRID_ROWS; j++)
@@ -358,7 +360,6 @@ namespace ORB_SLAM3
 
         // Edge extraction
         ExtractEdge(1, 20.0, 50.0, 150.0); // Example parameters for Canny edge detection
-        mvpMapBeziers = vector<MapBezier *>(mvBezierCurves.size(), static_cast<MapBezier *>(NULL));
 
         if (pPrevF)
         {
@@ -529,7 +530,6 @@ namespace ORB_SLAM3
 
         assignProperty3D();
 
-        // BezierCullingDepth();
         edgeCullingDepth();
 
         assignPropertyIdx();
@@ -537,6 +537,13 @@ namespace ORB_SLAM3
         constructSearchPlain();
 
         sampleBezierCurves();
+
+        BezierCullingDepth();
+
+        NB = mvBezierCurves.size();
+
+        mvpMapBeziers = vector<MapBezier *>(NB, static_cast<MapBezier *>(NULL));
+        mvbBezierOutlier = vector<bool>(NB, true);
     }
 
     bool Frame::isSet() const
@@ -706,6 +713,68 @@ namespace ORB_SLAM3
 
             return pMP->mbTrackInView || pMP->mbTrackInViewR;
         }
+    }
+
+    bool Frame::isInFrustum(MapBezier *pMB)
+    {
+        if (!pMB)
+            return false;
+
+        const std::vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+        if (worldPoints.size() < 2)
+            return false;
+
+        int visiblePointCount = 0;
+        float projectedLength = 0.0f;
+        Eigen::Vector2f projectionSum = Eigen::Vector2f::Zero();
+        Eigen::Vector2f previousProjection = Eigen::Vector2f::Zero();
+        bool previousPointVisible = false;
+
+        for (const Eigen::Vector3f &worldPoint : worldPoints)
+        {
+            const Eigen::Vector3f cameraPoint = mRcw * worldPoint + mtcw;
+
+            if (cameraPoint.z() <= 0)
+            {
+                previousPointVisible = false;
+                continue;
+            }
+
+            const Eigen::Vector2f projection = mpCamera->project(cameraPoint);
+            const bool insideImage =
+                projection.allFinite() &&
+                projection.x() >= mnMinX && projection.x() <= mnMaxX &&
+                projection.y() >= mnMinY && projection.y() <= mnMaxY;
+
+            if (!insideImage)
+            {
+                previousPointVisible = false;
+                continue;
+            }
+
+            ++visiblePointCount;
+            projectionSum += projection;
+
+            // Only accumulate connected visible pieces of the sampled curve.
+            if (previousPointVisible)
+                projectedLength += (projection - previousProjection).norm();
+
+            previousProjection = projection;
+            previousPointVisible = true;
+        }
+
+        // One isolated sample is not enough to represent a visible curve, and
+        // very short projections are unstable for edge-based association.
+        if (visiblePointCount < 2 || projectedLength < 10.0f)
+            return false;
+
+        const Eigen::Vector2f projectionCenter =
+            projectionSum / static_cast<float>(visiblePointCount);
+
+        pMB->mTrackProjX = projectionCenter.x();
+        pMB->mTrackProjY = projectionCenter.y();
+        pMB->mbTrackInView = true;
+        return true;
     }
 
     bool Frame::ProjectPointDistort(MapPoint *pMP, cv::Point2f &kp, float &u, float &v)
@@ -1408,15 +1477,18 @@ namespace ORB_SLAM3
         const BezierCurveFitter bezierFitter(1);
         for (int i = 0; i < mvEdges.size(); ++i)
         {
-            std::vector<BezierCurve> fittedCurves = bezierFitter.fitAdaptive(mvEdges[i].mvPoints);
+            std::vector<Eigen::Vector2f> edgePoints;
+            edgePoints.reserve(mvEdges[i].mvPoints.size());
+            for (const orderedEdgePoint &point : mvEdges[i].mvPoints)
+                edgePoints.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
+
+            std::vector<BezierCurve> fittedCurves = bezierFitter.fitAdaptive(edgePoints);
             for (BezierCurve &curve : fittedCurves)
             {
                 curve.edge_ID = mvEdges[i].edge_ID;
                 curve.cls = mvEdges[i].cls;
 
                 curve.sampleByArcLengthSpacing(3);
-                for (orderedEdgePoint &point : curve.sampledPoints)
-                    assignProperty3DEach(point);
 
                 mvBezierCurves.push_back(curve);
             }
@@ -1715,6 +1787,54 @@ namespace ORB_SLAM3
         else
         {
             pt.score_depth = 0;
+        }
+    }
+
+    void Frame::BezierCullingDepth()
+    {
+        for (auto curveIter = mvBezierCurves.begin(); curveIter != mvBezierCurves.end();)
+        {
+            BezierCurve &curve = *curveIter;
+            const int totalPointCount = static_cast<int>(curve.sampledPoints.size());
+
+            if (totalPointCount < 2)
+            {
+                curveIter = mvBezierCurves.erase(curveIter);
+                continue;
+            }
+
+            int validPointCount = 0;
+            for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
+            {
+                orderedEdgePoint point(samplePoint.x(), samplePoint.y());
+                assignProperty3DEach(point);
+                if (point.depth > 0.02f && point.depth < 5.0f)
+                    validPointCount++;
+            }
+
+            const float validRatio = static_cast<float>(validPointCount) / static_cast<float>(totalPointCount);
+
+            if (validRatio < 0.3f)
+            {
+                curveIter = mvBezierCurves.erase(curveIter);
+                continue;
+            }
+
+            auto newEnd = std::remove_if(curve.sampledPoints.begin(), curve.sampledPoints.end(),
+                                         [this](const Eigen::Vector2f &samplePoint)
+                                         {
+                                             orderedEdgePoint point(samplePoint.x(), samplePoint.y());
+                                             assignProperty3DEach(point);
+                                             return point.depth <= 0.02f || point.depth >= 5.0f;
+                                         });
+            curve.sampledPoints.erase(newEnd, curve.sampledPoints.end());
+
+            if (curve.sampledPoints.size() < 2)
+            {
+                curveIter = mvBezierCurves.erase(curveIter);
+                continue;
+            }
+            ++curveIter;
         }
     }
 

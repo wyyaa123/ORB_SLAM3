@@ -110,6 +110,8 @@ namespace ORB_SLAM3
         // and fill variables of the MapPoint to be used by the tracking
         bool isInFrustum(MapPoint *pMP, float viewingCosLimit);
 
+        bool isInFrustum(MapBezier *pMB);
+
         bool ProjectPointDistort(MapPoint *pMP, cv::Point2f &kp, float &u, float &v);
 
         Eigen::Vector3f inRefCoordinates(Eigen::Vector3f pCw);
@@ -256,7 +258,11 @@ namespace ORB_SLAM3
         // Number of KeyPoints.
         int N;
         // Number of sampled points for bezier curve.
-        int NBezier = 0;
+        int NB = 0;
+        // Curve-level outlier state produced by pose-only optimization.
+        std::vector<bool> mvbBezierOutlier;
+        int mnBezierInlierCurves = 0;
+        bool mbBezierOutliersValid = false;
 
         // Vector of keypoints (original for visualization) and undistorted (actually used by the system).
         // In the stereo case, mvKeysUn is redundant as images must be rectified.
@@ -355,6 +361,7 @@ namespace ORB_SLAM3
         void assignProperty3D();
 
         inline void assignProperty3DEach(orderedEdgePoint &pt);
+        inline void assignProperty3DEach(Eigen::Vector2f &pt);
 
         void BezierCullingDepth();
 

@@ -175,6 +175,12 @@ namespace ORB_SLAM3
         mpCurrentMap->SetReferenceMapPoints(vpMPs);
     }
 
+    void Atlas::SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs)
+    {
+        unique_lock<mutex> lock(mMutexAtlas);
+        mpCurrentMap->SetReferenceMapBeziers(vpMBs);
+    }
+
     void Atlas::InformNewBigChange()
     {
         unique_lock<mutex> lock(mMutexAtlas);

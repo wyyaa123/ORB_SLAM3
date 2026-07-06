@@ -22,6 +22,7 @@
 
 #include "Map.h"
 #include "MapPoint.h"
+#include "MapBezier.h"
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"
