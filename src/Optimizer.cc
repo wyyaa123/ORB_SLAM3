@@ -846,6 +846,7 @@ namespace ORB_SLAM3
 
         const float deltaMono = sqrt(5.991);
         const float deltaStereo = sqrt(7.815);
+        const float deltaBezier = sqrt(3.841);
 
         // 填充顶点和边
         {
@@ -1011,41 +1012,55 @@ namespace ORB_SLAM3
                 // 如果pMB不为空，证明其与当前帧有对应关系，说明当前帧观测到了该Bezier曲线
                 if (pMB)
                 {
-                    nInitialCorrespondences++;
-                    pFrame->mvbBezierOutlier[i] = false;
+                    if (i >= pFrame->mvBezierCurves.size())
+                        continue;
 
-                    int sampleNum = pMB->GetWorldPoints().size();
                     vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
-                    BezierCurve bezier = pFrame->mvBezierCurves[i];
-                    
-                    for (int j = 0; j < sampleNum; ++j)
+                    const BezierCurve &bezier = pFrame->mvBezierCurves[i];
+                    if (worldPoints.empty() || bezier.controlPoints.size() < 2 || bezier.sampledPoints.size() < 2)
+                        continue;
+
+                    bool hasBezierEdge = false;
+                    for (const Eigen::Vector3f &worldPoint : worldPoints)
                     {
-                        Eigen::Vector2f uv = pFrame->mpCamera->project(worldPoints[j]);
+                        const Eigen::Vector3f cameraPoint = Tcw * worldPoint;
+                        if (cameraPoint.z() <= 0.0f)
+                            continue;
+
+                        const Eigen::Vector2f projectedUv = pFrame->mpCamera->project(cameraPoint);
+                        const Eigen::Vector2f closestPoint = bezier.closestPointOnCurve(projectedUv, 10, 5);
+
+                        Eigen::Vector2d normal;
+                        if (!bezier.estimateNormalFromSamples(closestPoint, normal))
+                            continue;
+
+                        Eigen::Matrix<double, 2, 1> obs = closestPoint.cast<double>();
+
+                        ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose *e =
+                            new ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose();
+
+                        e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+                        e->setMeasurement(obs);
+                        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+
+                        g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                        e->setRobustKernel(rk);
+                        rk->setDelta(deltaBezier);
+
+                        e->pCamera = pFrame->mpCamera;
+                        e->Xw = worldPoint.cast<double>();
+                        e->normal = normal;
+
+                        optimizer.addEdge(e);
+
+                        vpEdgesBezier.push_back(e);
+                        vnIndexEdgeBezier.push_back(i);
+                        nInitialCorrespondences++;
+                        hasBezierEdge = true;
                     }
-                    
 
-                    // Eigen::Matrix<double, 2, 1> obs;
-                    // const orderedEdgePoint& 
-                    // obs << kpUn.pt.x, kpUn.pt.y;
-
-                    // ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose *e = new ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose();
-
-                    // e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
-                    // e->setMeasurement(obs);
-                    // const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
-                    // e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
-
-                    // g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
-                    // e->setRobustKernel(rk);
-                    // rk->setDelta(deltaMono);
-
-                    // e->pCamera = pFrame->mpCamera;
-                    // e->Xw = pMB->GetWorldPos().cast<double>();
-
-                    // optimizer.addEdge(e);
-
-                    // vpEdgesBezier.push_back(e);
-                    // vnIndexEdgeBezier.push_back(i);
+                    if (hasBezierEdge)
+                        pFrame->mvbBezierOutlier[i] = false;
                 }
             }
         }
@@ -1057,6 +1072,7 @@ namespace ORB_SLAM3
         // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
         const float chi2Mono[4] = {5.991, 5.991, 5.991, 5.991};
         const float chi2Stereo[4] = {7.815, 7.815, 7.815, 7.815};
+        const float chi2Bezier[4] = {3.841, 3.841, 3.841, 3.841};
         const int its[4] = {10, 10, 10, 10};
 
         int nBad = 0;
@@ -1158,6 +1174,47 @@ namespace ORB_SLAM3
                     e->setRobustKernel(0);
             }
 
+            vector<int> vBezierEdgeCount(NB, 0);
+            vector<int> vBezierBadCount(NB, 0);
+
+            for (size_t i = 0, iend = vpEdgesBezier.size(); i < iend; i++)
+            {
+                ORB_SLAM3::EdgeSE3ProjectBezierPointOnlyPose *e = vpEdgesBezier[i];
+
+                const size_t idx = vnIndexEdgeBezier[i];
+                if (idx >= NB)
+                    continue;
+
+                vBezierEdgeCount[idx]++;
+
+                if (pFrame->mvbBezierOutlier[idx])
+                {
+                    e->computeError();
+                }
+
+                const float chi2 = e->chi2();
+
+                if (chi2 > chi2Bezier[it] || !e->isDepthPositive())
+                {
+                    e->setLevel(1);
+                    vBezierBadCount[idx]++;
+                    nBad++;
+                }
+                else
+                {
+                    e->setLevel(0);
+                }
+
+                if (it == 2)
+                    e->setRobustKernel(0);
+            }
+
+            for (int i = 0; i < NB; ++i)
+            {
+                if (vBezierEdgeCount[i] > 0)
+                    pFrame->mvbBezierOutlier[i] = (vBezierBadCount[i] * 2 > vBezierEdgeCount[i]);
+            }
+
             if (optimizer.edges().size() < 10)
                 break;
         }
@@ -1193,6 +1250,8 @@ namespace ORB_SLAM3
         // Local MapPoints seen in Local KeyFrames
         num_fixedKF = 0;
         list<MapPoint *> lLocalMapPoints;
+        list<MapBezier *> lLocalMapBeziers;
+        set<MapBezier *> spLocalMapBeziers;
         set<MapPoint *> sNumObsMP;
         for (list<KeyFrame *>::iterator lit = lLocalKeyFrames.begin(), lend = lLocalKeyFrames.end(); lit != lend; lit++)
         {
@@ -1216,6 +1275,17 @@ namespace ORB_SLAM3
                         }
                     }
             }
+
+            vector<MapBezier *> vpMBs = pKFi->GetMapBezierMatches();
+            for (vector<MapBezier *>::iterator vit = vpMBs.begin(), vend = vpMBs.end(); vit != vend; vit++)
+            {
+                MapBezier *pMB = *vit;
+                if (pMB && !pMB->isBad() && pMB->GetMap() == pCurrentMap)
+                {
+                    if (spLocalMapBeziers.insert(pMB).second)
+                        lLocalMapBeziers.push_back(pMB);
+                }
+            }
         }
 
         // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
@@ -1224,6 +1294,21 @@ namespace ORB_SLAM3
         {
             map<KeyFrame *, tuple<int, int>> observations = (*lit)->GetObservations();
             for (map<KeyFrame *, tuple<int, int>>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+            {
+                KeyFrame *pKFi = mit->first;
+
+                if (pKFi->mnBALocalForKF != pKF->mnId && pKFi->mnBAFixedForKF != pKF->mnId)
+                {
+                    pKFi->mnBAFixedForKF = pKF->mnId;
+                    if (!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
+                        lFixedCameras.push_back(pKFi);
+                }
+            }
+        }
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            map<KeyFrame *, int> observations = (*lit)->GetObservations();
+            for (map<KeyFrame *, int>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
             {
                 KeyFrame *pKFi = mit->first;
 
@@ -1332,10 +1417,20 @@ namespace ORB_SLAM3
 
         const float thHuberMono = sqrt(5.991);
         const float thHuberStereo = sqrt(7.815);
+        const float thHuberBezier = sqrt(3.841);
+        const float chi2Bezier = 3.841;
+        const float maxBezierAssociationDist2 = 15.0f * 15.0f;
+
+        vector<ORB_SLAM3::EdgeSE3ProjectBezierPoint *> vpEdgesBezier;
+        vector<KeyFrame *> vpEdgeKFBezier;
+        vector<MapBezier *> vpMapBezierEdgeBezier;
+        vector<size_t> vnBezierPointIdxEdge;
 
         int nPoints = 0;
 
         int nEdges = 0;
+        unsigned long nextBezierVertexId = maxKFid + 1;
+        map<pair<MapBezier *, size_t>, unsigned long> mBezierVertexIds;
 
         for (list<MapPoint *>::iterator lit = lLocalMapPoints.begin(), lend = lLocalMapPoints.end(); lit != lend; lit++)
         {
@@ -1346,6 +1441,7 @@ namespace ORB_SLAM3
             vPoint->setId(id);
             vPoint->setMarginalized(true);
             optimizer.addVertex(vPoint);
+            nextBezierVertexId = std::max(nextBezierVertexId, static_cast<unsigned long>(id) + 1);
             nPoints++;
 
             const map<KeyFrame *, tuple<int, int>> observations = pMP->GetObservations();
@@ -1461,6 +1557,92 @@ namespace ORB_SLAM3
                 }
             }
         }
+
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            MapBezier *pMB = *lit;
+            if (!pMB || pMB->isBad())
+                continue;
+
+            const vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+            if (worldPoints.size() < 2)
+                continue;
+
+            for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+            {
+                g2o::VertexSBAPointXYZ *vPoint = new g2o::VertexSBAPointXYZ();
+                vPoint->setEstimate(worldPoints[pointIdx].cast<double>());
+                const unsigned long id = nextBezierVertexId++;
+                vPoint->setId(id);
+                vPoint->setMarginalized(true);
+                optimizer.addVertex(vPoint);
+                mBezierVertexIds[make_pair(pMB, pointIdx)] = id;
+            }
+
+            const map<KeyFrame *, int> observations = pMB->GetObservations();
+            for (map<KeyFrame *, int>::const_iterator mit = observations.begin(), mend = observations.end(); mit != mend; ++mit)
+            {
+                KeyFrame *pKFi = mit->first;
+                if (!pKFi || pKFi->isBad() || pKFi->GetMap() != pCurrentMap || optimizer.vertex(pKFi->mnId) == nullptr)
+                    continue;
+
+                const Sophus::SE3f Tcw = pKFi->GetPose();
+                const vector<MapBezier *> vpKFBeziers = pKFi->GetMapBezierMatches();
+                for (size_t curveIdx = 0; curveIdx < vpKFBeziers.size() && curveIdx < pKFi->mvBezierCurves.size(); ++curveIdx)
+                {
+                    if (vpKFBeziers[curveIdx] != pMB)
+                        continue;
+
+                    const BezierCurve &bezier = pKFi->mvBezierCurves[curveIdx];
+                    if (bezier.sampledPoints.size() < 2)
+                        continue;
+
+                    for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+                    {
+                        const Eigen::Vector3f Xc = Tcw * worldPoints[pointIdx];
+                        if (Xc.z() <= 0.0f)
+                            continue;
+
+                        const Eigen::Vector2f projected = pKFi->mpCamera->project(Xc);
+                        if (!projected.allFinite() || !pKFi->IsInImage(projected.x(), projected.y()))
+                            continue;
+
+                        const Eigen::Vector2f closestPoint = bezier.closestPointOnCurve(projected, 10, 5);
+                        if ((closestPoint - projected).squaredNorm() > maxBezierAssociationDist2)
+                            continue;
+
+                        Eigen::Vector2d normal;
+                        if (!bezier.estimateNormalFromSamples(closestPoint, normal))
+                            continue;
+
+                        const auto vertexIt = mBezierVertexIds.find(make_pair(pMB, pointIdx));
+                        if (vertexIt == mBezierVertexIds.end())
+                            continue;
+
+                        ORB_SLAM3::EdgeSE3ProjectBezierPoint *e = new ORB_SLAM3::EdgeSE3ProjectBezierPoint();
+                        e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(vertexIt->second)));
+                        e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
+                        e->setMeasurement(closestPoint.cast<double>());
+                        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+
+                        g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                        e->setRobustKernel(rk);
+                        rk->setDelta(thHuberBezier);
+
+                        e->normal = normal;
+                        e->pCamera = pKFi->mpCamera;
+
+                        optimizer.addEdge(e);
+                        vpEdgesBezier.push_back(e);
+                        vpEdgeKFBezier.push_back(pKFi);
+                        vpMapBezierEdgeBezier.push_back(pMB);
+                        vnBezierPointIdxEdge.push_back(pointIdx);
+
+                        nEdges++;
+                    }
+                }
+            }
+        }
         num_edges = nEdges;
 
         if (pbStopFlag)
@@ -1519,6 +1701,18 @@ namespace ORB_SLAM3
             }
         }
 
+        for (size_t i = 0, iend = vpEdgesBezier.size(); i < iend; i++)
+        {
+            ORB_SLAM3::EdgeSE3ProjectBezierPoint *e = vpEdgesBezier[i];
+            MapBezier *pMB = vpMapBezierEdgeBezier[i];
+
+            if (!pMB || pMB->isBad())
+                continue;
+
+            if (e->chi2() > chi2Bezier || !e->isDepthPositive())
+                e->setLevel(1);
+        }
+
         // Get Map Mutex
         unique_lock<mutex> lock(pMap->mMutexMapUpdate);
 
@@ -1551,6 +1745,29 @@ namespace ORB_SLAM3
             g2o::VertexSBAPointXYZ *vPoint = static_cast<g2o::VertexSBAPointXYZ *>(optimizer.vertex(pMP->mnId + maxKFid + 1));
             pMP->SetWorldPos(vPoint->estimate().cast<float>());
             pMP->UpdateNormalAndDepth();
+        }
+
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            MapBezier *pMB = *lit;
+            if (!pMB || pMB->isBad())
+                continue;
+
+            vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+            for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+            {
+                const auto vertexIt = mBezierVertexIds.find(make_pair(pMB, pointIdx));
+                if (vertexIt == mBezierVertexIds.end())
+                    continue;
+
+                g2o::VertexSBAPointXYZ *vPoint =
+                    static_cast<g2o::VertexSBAPointXYZ *>(optimizer.vertex(vertexIt->second));
+                if (!vPoint)
+                    continue;
+
+                worldPoints[pointIdx] = vPoint->estimate().cast<float>();
+            }
+            pMB->SetWorldPoints(worldPoints);
         }
 
         pMap->IncreaseChangeIndex();
@@ -2470,6 +2687,8 @@ namespace ORB_SLAM3
 
         // Optimizable points seen by temporal optimizable keyframes
         list<MapPoint *> lLocalMapPoints;
+        list<MapBezier *> lLocalMapBeziers;
+        set<MapBezier *> spLocalMapBeziers;
         for (int i = 0; i < N; i++)
         {
             vector<MapPoint *> vpMPs = vpOptimizableKFs[i]->GetMapPointMatches();
@@ -2483,6 +2702,17 @@ namespace ORB_SLAM3
                             lLocalMapPoints.push_back(pMP);
                             pMP->mnBALocalForKF = pKF->mnId;
                         }
+            }
+
+            vector<MapBezier *> vpMBs = vpOptimizableKFs[i]->GetMapBezierMatches();
+            for (vector<MapBezier *>::iterator vit = vpMBs.begin(), vend = vpMBs.end(); vit != vend; vit++)
+            {
+                MapBezier *pMB = *vit;
+                if (pMB && !pMB->isBad() && pMB->GetMap() == pCurrentMap)
+                {
+                    if (spLocalMapBeziers.insert(pMB).second)
+                        lLocalMapBeziers.push_back(pMB);
+                }
             }
         }
 
@@ -2528,6 +2758,17 @@ namespace ORB_SLAM3
                                 pMP->mnBALocalForKF = pKF->mnId;
                             }
                 }
+
+                vector<MapBezier *> vpMBs = pKFi->GetMapBezierMatches();
+                for (vector<MapBezier *>::iterator vit = vpMBs.begin(), vend = vpMBs.end(); vit != vend; vit++)
+                {
+                    MapBezier *pMB = *vit;
+                    if (pMB && !pMB->isBad() && pMB->GetMap() == pCurrentMap)
+                    {
+                        if (spLocalMapBeziers.insert(pMB).second)
+                            lLocalMapBeziers.push_back(pMB);
+                    }
+                }
             }
         }
 
@@ -2545,6 +2786,26 @@ namespace ORB_SLAM3
                 {
                     pKFi->mnBAFixedForKF = pKF->mnId;
                     if (!pKFi->isBad())
+                    {
+                        lFixedKeyFrames.push_back(pKFi);
+                        break;
+                    }
+                }
+            }
+            if (lFixedKeyFrames.size() >= maxFixKF)
+                break;
+        }
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            map<KeyFrame *, int> observations = (*lit)->GetObservations();
+            for (map<KeyFrame *, int>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+            {
+                KeyFrame *pKFi = mit->first;
+
+                if (pKFi->mnBALocalForKF != pKF->mnId && pKFi->mnBAFixedForKF != pKF->mnId)
+                {
+                    pKFi->mnBAFixedForKF = pKF->mnId;
+                    if (!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
                     {
                         lFixedKeyFrames.push_back(pKFi);
                         break;
@@ -2742,8 +3003,18 @@ namespace ORB_SLAM3
         const float chi2Mono2 = 5.991;
         const float thHuberStereo = sqrt(7.815);
         const float chi2Stereo2 = 7.815;
+        const float thHuberBezier = sqrt(3.841);
+        const float chi2Bezier2 = 3.841;
+        const float maxBezierAssociationDist2 = 15.0f * 15.0f;
+
+        vector<EdgeBezier *> vpEdgesBezier;
+        vector<KeyFrame *> vpEdgeKFBezier;
+        vector<MapBezier *> vpMapBezierEdgeBezier;
+        vector<size_t> vnBezierPointIdxEdge;
 
         const unsigned long iniMPid = maxKFid * 5;
+        unsigned long nextBezierVertexId = iniMPid + 1;
+        map<pair<MapBezier *, size_t>, unsigned long> mBezierVertexIds;
 
         map<int, int> mVisEdges;
         for (int i = 0; i < N; i++)
@@ -2766,6 +3037,7 @@ namespace ORB_SLAM3
             vPoint->setId(id);
             vPoint->setMarginalized(true);
             optimizer.addVertex(vPoint);
+            nextBezierVertexId = std::max(nextBezierVertexId, id + 1);
             const map<KeyFrame *, tuple<int, int>> observations = pMP->GetObservations();
 
             // Create visual constraints
@@ -2884,6 +3156,93 @@ namespace ORB_SLAM3
             }
         }
 
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            MapBezier *pMB = *lit;
+            if (!pMB || pMB->isBad())
+                continue;
+
+            const vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+            if (worldPoints.size() < 2)
+                continue;
+
+            for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+            {
+                g2o::VertexSBAPointXYZ *vPoint = new g2o::VertexSBAPointXYZ();
+                vPoint->setEstimate(worldPoints[pointIdx].cast<double>());
+                const unsigned long id = nextBezierVertexId++;
+                vPoint->setId(id);
+                vPoint->setMarginalized(true);
+                optimizer.addVertex(vPoint);
+                mBezierVertexIds[make_pair(pMB, pointIdx)] = id;
+            }
+
+            const map<KeyFrame *, int> observations = pMB->GetObservations();
+            for (map<KeyFrame *, int>::const_iterator mit = observations.begin(), mend = observations.end(); mit != mend; ++mit)
+            {
+                KeyFrame *pKFi = mit->first;
+                if (!pKFi || pKFi->isBad() || pKFi->GetMap() != pCurrentMap)
+                    continue;
+
+                if (pKFi->mnBALocalForKF != pKF->mnId && pKFi->mnBAFixedForKF != pKF->mnId)
+                    continue;
+
+                if (optimizer.vertex(pKFi->mnId) == nullptr)
+                    continue;
+
+                const Sophus::SE3f Tcw = pKFi->GetPose();
+                const vector<MapBezier *> vpKFBeziers = pKFi->GetMapBezierMatches();
+                for (size_t curveIdx = 0; curveIdx < vpKFBeziers.size() && curveIdx < pKFi->mvBezierCurves.size(); ++curveIdx)
+                {
+                    if (vpKFBeziers[curveIdx] != pMB)
+                        continue;
+
+                    const BezierCurve &bezier = pKFi->mvBezierCurves[curveIdx];
+                    if (bezier.sampledPoints.size() < 2)
+                        continue;
+
+                    for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+                    {
+                        const Eigen::Vector3f Xc = Tcw * worldPoints[pointIdx];
+                        if (Xc.z() <= 0.0f)
+                            continue;
+
+                        const Eigen::Vector2f projected = pKFi->mpCamera->project(Xc);
+                        if (!projected.allFinite() || !pKFi->IsInImage(projected.x(), projected.y()))
+                            continue;
+
+                        const Eigen::Vector2f closestPoint = bezier.closestPointOnCurve(projected, 10, 5);
+                        if ((closestPoint - projected).squaredNorm() > maxBezierAssociationDist2)
+                            continue;
+
+                        Eigen::Vector2d normal;
+                        if (!bezier.estimateNormalFromSamples(closestPoint, normal))
+                            continue;
+
+                        const auto vertexIt = mBezierVertexIds.find(make_pair(pMB, pointIdx));
+                        if (vertexIt == mBezierVertexIds.end())
+                            continue;
+
+                        EdgeBezier *e = new EdgeBezier(normal, 0);
+                        e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(vertexIt->second)));
+                        e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
+                        e->setMeasurement(closestPoint.cast<double>());
+                        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+
+                        g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                        e->setRobustKernel(rk);
+                        rk->setDelta(thHuberBezier);
+
+                        optimizer.addEdge(e);
+                        vpEdgesBezier.push_back(e);
+                        vpEdgeKFBezier.push_back(pKFi);
+                        vpMapBezierEdgeBezier.push_back(pMB);
+                        vnBezierPointIdxEdge.push_back(pointIdx);
+                    }
+                }
+            }
+        }
+
         // cout << "Total map points: " << lLocalMapPoints.size() << endl;
         for (map<int, int>::iterator mit = mVisEdges.begin(), mend = mVisEdges.end(); mit != mend; mit++)
         {
@@ -2933,6 +3292,18 @@ namespace ORB_SLAM3
                 KeyFrame *pKFi = vpEdgeKFStereo[i];
                 vToErase.push_back(make_pair(pKFi, pMP));
             }
+        }
+
+        for (size_t i = 0, iend = vpEdgesBezier.size(); i < iend; i++)
+        {
+            EdgeBezier *e = vpEdgesBezier[i];
+            MapBezier *pMB = vpMapBezierEdgeBezier[i];
+
+            if (!pMB || pMB->isBad())
+                continue;
+
+            if (e->chi2() > chi2Bezier2 || !e->isDepthPositive())
+                e->setLevel(1);
         }
 
         // Get Map Mutex and erase outliers
@@ -3000,6 +3371,29 @@ namespace ORB_SLAM3
             g2o::VertexSBAPointXYZ *vPoint = static_cast<g2o::VertexSBAPointXYZ *>(optimizer.vertex(pMP->mnId + iniMPid + 1));
             pMP->SetWorldPos(vPoint->estimate().cast<float>());
             pMP->UpdateNormalAndDepth();
+        }
+
+        for (list<MapBezier *>::iterator lit = lLocalMapBeziers.begin(), lend = lLocalMapBeziers.end(); lit != lend; lit++)
+        {
+            MapBezier *pMB = *lit;
+            if (!pMB || pMB->isBad())
+                continue;
+
+            vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+            for (size_t pointIdx = 0; pointIdx < worldPoints.size(); ++pointIdx)
+            {
+                const auto vertexIt = mBezierVertexIds.find(make_pair(pMB, pointIdx));
+                if (vertexIt == mBezierVertexIds.end())
+                    continue;
+
+                g2o::VertexSBAPointXYZ *vPoint =
+                    static_cast<g2o::VertexSBAPointXYZ *>(optimizer.vertex(vertexIt->second));
+                if (!vPoint)
+                    continue;
+
+                worldPoints[pointIdx] = vPoint->estimate().cast<float>();
+            }
+            pMB->SetWorldPoints(worldPoints);
         }
 
         pMap->IncreaseChangeIndex();
@@ -4582,6 +4976,7 @@ namespace ORB_SLAM3
 
         int nInitialMonoCorrespondences = 0;
         int nInitialStereoCorrespondences = 0;
+        int nInitialBezierCorrespondences = 0;
         int nInitialCorrespondences = 0;
 
         // Set Frame vertex
@@ -4604,20 +4999,27 @@ namespace ORB_SLAM3
 
         // Set MapPoint vertices
         const int N = pFrame->N;
+        const int NB = pFrame->NB;
         const int Nleft = pFrame->Nleft;
         const bool bRight = (Nleft != -1);
 
         vector<EdgeMonoOnlyPose *> vpEdgesMono;
         vector<EdgeStereoOnlyPose *> vpEdgesStereo;
+        vector<EdgeBezierOnlyPose *> vpEdgesBezier;
+        vector<bool> vbEdgeBezierOutlier;
         vector<size_t> vnIndexEdgeMono;
         vector<size_t> vnIndexEdgeStereo;
+        vector<size_t> vnIndexEdgeBezier;
         vpEdgesMono.reserve(N);
         vpEdgesStereo.reserve(N);
+        vpEdgesBezier.reserve(NB);
         vnIndexEdgeMono.reserve(N);
         vnIndexEdgeStereo.reserve(N);
+        vnIndexEdgeBezier.reserve(NB);
 
         const float thHuberMono = sqrt(5.991);
         const float thHuberStereo = sqrt(7.815);
+        const float thHuberBezier = sqrt(3.841);
 
         {
             unique_lock<mutex> lock(MapPoint::mGlobalMutex);
@@ -4727,8 +5129,57 @@ namespace ORB_SLAM3
                     }
                 }
             }
+
+            assert(pFrame->NB == static_cast<int>(pFrame->mvpMapBeziers.size()));
+            assert(pFrame->NB == static_cast<int>(pFrame->mvBezierCurves.size()));
+            assert(pFrame->NB == static_cast<int>(pFrame->mvbBezierOutlier.size()));
+            for (int i = 0; i < NB; ++i)
+            {
+                MapBezier *pMB = pFrame->mvpMapBeziers[i];
+                if (!pMB || i >= static_cast<int>(pFrame->mvBezierCurves.size()))
+                    continue;
+
+                const BezierCurve &bezier = pFrame->mvBezierCurves[i];
+                vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+
+                if (worldPoints.empty() || bezier.sampledPoints.size() < 2)
+                    continue;
+
+                nInitialBezierCorrespondences++;
+                pFrame->mvbBezierOutlier[i] = false;
+
+                for (const Eigen::Vector3f &worldPoint : worldPoints)
+                {
+                    if (!VP->estimate().isDepthPositive(worldPoint.cast<double>(), 0))
+                        continue;
+
+                    Eigen::Vector2d projected = VP->estimate().Project(worldPoint.cast<double>(), 0);
+                    Eigen::Vector2f projectedF = projected.cast<float>();
+
+                    Eigen::Vector2f closestPoint = bezier.closestPointOnCurve(projectedF, 10, 5);
+
+                    Eigen::Vector2d normal;
+                    if (!bezier.estimateNormalFromSamples(closestPoint, normal))
+                        continue;
+
+                    EdgeBezierOnlyPose *e = new EdgeBezierOnlyPose(worldPoint, normal, 0);
+                    e->setVertex(0, VP);
+                    e->setMeasurement(closestPoint.cast<double>());
+                    e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+
+                    g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                    e->setRobustKernel(rk);
+                    rk->setDelta(thHuberBezier);
+
+                    optimizer.addEdge(e);
+
+                    vpEdgesBezier.push_back(e);
+                    vnIndexEdgeBezier.push_back(i);
+                    vbEdgeBezierOutlier.push_back(false);
+                }
+            }
         }
-        nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences;
+        nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences + nInitialBezierCorrespondences;
 
         // Set KeyFrame vertex
         KeyFrame *pKF = pFrame->mpLastKeyFrame;
@@ -4777,14 +5228,17 @@ namespace ORB_SLAM3
         // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
         float chi2Mono[4] = {12, 7.5, 5.991, 5.991};
         float chi2Stereo[4] = {15.6, 9.8, 7.815, 7.815};
+        const float chi2Bezier[4] = {3.841, 3.841, 3.841, 3.841};
 
         int its[4] = {10, 10, 10, 10};
 
         int nBad = 0;
         int nBadMono = 0;
         int nBadStereo = 0;
+        int nBadBezier = 0;
         int nInliersMono = 0;
         int nInliersStereo = 0;
+        int nInliersBezier = 0;
         int nInliers = 0;
         for (size_t it = 0; it < 4; it++)
         {
@@ -4794,10 +5248,14 @@ namespace ORB_SLAM3
             nBad = 0;
             nBadMono = 0;
             nBadStereo = 0;
+            nBadBezier = 0;
             nInliers = 0;
             nInliersMono = 0;
             nInliersStereo = 0;
+            nInliersBezier = 0;
             float chi2close = 1.5 * chi2Mono[it];
+            vector<int> vBezierEdgeCount(pFrame->NB, 0);
+            vector<int> vBezierBadCount(pFrame->NB, 0);
 
             // For monocular observations
             for (size_t i = 0, iend = vpEdgesMono.size(); i < iend; i++)
@@ -4862,8 +5320,55 @@ namespace ORB_SLAM3
                     e->setRobustKernel(0);
             }
 
-            nInliers = nInliersMono + nInliersStereo;
-            nBad = nBadMono + nBadStereo;
+            for (size_t i = 0; i < vpEdgesBezier.size(); ++i)
+            {
+                EdgeBezierOnlyPose *e = vpEdgesBezier[i];
+                const size_t idx = vnIndexEdgeBezier[i];
+
+                if (idx >= pFrame->mvbBezierOutlier.size())
+                    continue;
+
+                vBezierEdgeCount[idx]++;
+
+                if (vbEdgeBezierOutlier[i])
+                    e->computeError();
+
+                if (e->chi2() > chi2Bezier[it] || !e->isDepthPositive())
+                {
+                    vbEdgeBezierOutlier[i] = true;
+                    e->setLevel(1);
+                    vBezierBadCount[idx]++;
+                }
+                else
+                {
+                    vbEdgeBezierOutlier[i] = false;
+                    e->setLevel(0);
+                }
+
+                if (it == 2)
+                    e->setRobustKernel(0);
+            }
+
+            for (int i = 0; i < pFrame->NB; ++i)
+            {
+                if (vBezierEdgeCount[i] > 0)
+                {
+                    bool isOutlier = (vBezierBadCount[i] * 2 > vBezierEdgeCount[i]);
+                    pFrame->mvbBezierOutlier[i] = isOutlier;
+
+                    if (isOutlier)
+                    {
+                        nBadBezier++;
+                    }
+                    else
+                    {
+                        nInliersBezier++;
+                    }
+                }
+            }
+
+            nInliers = nInliersMono + nInliersStereo + nInliersBezier;
+            nBad = nBadMono + nBadStereo + nBadBezier;
 
             if (optimizer.edges().size() < 10)
             {
@@ -4877,8 +5382,10 @@ namespace ORB_SLAM3
             nBad = 0;
             const float chi2MonoOut = 18.f;
             const float chi2StereoOut = 24.f;
+            const float chi2BezierOut = 16.f;
             EdgeMonoOnlyPose *e1;
             EdgeStereoOnlyPose *e2;
+            EdgeBezierOnlyPose *e3;
             for (size_t i = 0, iend = vnIndexEdgeMono.size(); i < iend; i++)
             {
                 const size_t idx = vnIndexEdgeMono[i];
@@ -4897,6 +5404,33 @@ namespace ORB_SLAM3
                 if (e2->chi2() < chi2StereoOut)
                     pFrame->mvbOutlier[idx] = false;
                 else
+                    nBad++;
+            }
+
+            vector<int> vBezierOutEdgeCount(pFrame->NB, 0);
+            vector<int> vBezierOutBadCount(pFrame->NB, 0);
+            for (size_t i = 0, iend = vnIndexEdgeBezier.size(); i < iend; ++i)
+            {
+                const size_t idx = vnIndexEdgeBezier[i];
+                if (idx >= pFrame->mvbBezierOutlier.size())
+                    continue;
+
+                EdgeBezierOnlyPose *e3 = vpEdgesBezier[i];
+                e3->computeError();
+
+                vBezierOutEdgeCount[idx]++;
+                if (e3->chi2() >= chi2BezierOut)
+                    vBezierOutBadCount[idx]++;
+            }
+
+            for (int i = 0; i < pFrame->NB; ++i)
+            {
+                if (vBezierOutEdgeCount[i] == 0)
+                    continue;
+
+                const bool isOutlier = (vBezierOutBadCount[i] * 2 > vBezierOutEdgeCount[i]);
+                pFrame->mvbBezierOutlier[i] = isOutlier;
+                if (isOutlier)
                     nBad++;
             }
         }
@@ -4946,6 +5480,17 @@ namespace ORB_SLAM3
                 tot_out++;
         }
 
+        for (size_t i = 0; i < vpEdgesBezier.size(); ++i)
+        {
+            if (!vbEdgeBezierOutlier[i])
+            {
+                H.block<6, 6>(0, 0) += vpEdgesBezier[i]->GetHessian();
+                tot_in++;
+            }
+            else
+                tot_out++;
+        }
+
         pFrame->mpcpi = new ConstraintPoseImu(VP->estimate().Rwb, VP->estimate().twb, VV->estimate(), VG->estimate(), VA->estimate(), H);
 
         return nInitialCorrespondences - nBad;
@@ -4967,6 +5512,7 @@ namespace ORB_SLAM3
 
         int nInitialMonoCorrespondences = 0;
         int nInitialStereoCorrespondences = 0;
+        int nInitialBezierCorrespondences = 0;
         int nInitialCorrespondences = 0;
 
         // Set Current Frame vertex
@@ -4989,20 +5535,27 @@ namespace ORB_SLAM3
 
         // Set MapPoint vertices
         const int N = pFrame->N;
+        const int NB = pFrame->NB;
         const int Nleft = pFrame->Nleft;
         const bool bRight = (Nleft != -1);
 
         vector<EdgeMonoOnlyPose *> vpEdgesMono;
         vector<EdgeStereoOnlyPose *> vpEdgesStereo;
+        vector<EdgeBezierOnlyPose *> vpEdgesBezier;
+        vector<bool> vbEdgeBezierOutlier;
         vector<size_t> vnIndexEdgeMono;
         vector<size_t> vnIndexEdgeStereo;
+        vector<size_t> vnIndexEdgeBezier;
         vpEdgesMono.reserve(N);
         vpEdgesStereo.reserve(N);
+        vpEdgesBezier.reserve(NB);
         vnIndexEdgeMono.reserve(N);
         vnIndexEdgeStereo.reserve(N);
+        vnIndexEdgeBezier.reserve(NB);
 
         const float thHuberMono = sqrt(5.991);
         const float thHuberStereo = sqrt(7.815);
+        const float thHuberBezier = sqrt(3.841);
 
         {
             unique_lock<mutex> lock(MapPoint::mGlobalMutex);
@@ -5112,9 +5665,63 @@ namespace ORB_SLAM3
                     }
                 }
             }
+
+            // const int NBCheck = std::min({pFrame->NB,
+            //                   static_cast<int>(pFrame->mvpMapBeziers.size()),
+            //                   static_cast<int>(pFrame->mvBezierCurves.size()),
+            //                   static_cast<int>(pFrame->mvbBezierOutlier.size())});
+
+            assert(pFrame->NB == static_cast<int>(pFrame->mvpMapBeziers.size()));
+            assert(pFrame->NB == static_cast<int>(pFrame->mvBezierCurves.size()));
+            assert(pFrame->NB == static_cast<int>(pFrame->mvbBezierOutlier.size()));
+            for (int i = 0; i < NB; ++i)
+            {
+                MapBezier *pMB = pFrame->mvpMapBeziers[i];
+                if (!pMB || i >= static_cast<int>(pFrame->mvBezierCurves.size()))
+                    continue;
+
+                const BezierCurve &bezier = pFrame->mvBezierCurves[i];
+                vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
+
+                if (worldPoints.empty() || bezier.sampledPoints.size() < 2)
+                    continue;
+
+                nInitialBezierCorrespondences++;
+                pFrame->mvbBezierOutlier[i] = false;
+
+                for (const Eigen::Vector3f &worldPoint : worldPoints)
+                {
+                    if (!VP->estimate().isDepthPositive(worldPoint.cast<double>(), 0))
+                        continue;
+
+                    Eigen::Vector2d projected = VP->estimate().Project(worldPoint.cast<double>(), 0);
+                    Eigen::Vector2f projectedF = projected.cast<float>();
+
+                    Eigen::Vector2f closestPoint = bezier.closestPointOnCurve(projectedF, 10, 5);
+
+                    Eigen::Vector2d normal;
+                    if (!bezier.estimateNormalFromSamples(closestPoint, normal))
+                        continue;
+
+                    EdgeBezierOnlyPose *e = new EdgeBezierOnlyPose(worldPoint, normal, 0);
+                    e->setVertex(0, VP);
+                    e->setMeasurement(closestPoint.cast<double>());
+                    e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+
+                    g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
+                    e->setRobustKernel(rk);
+                    rk->setDelta(thHuberBezier);
+
+                    optimizer.addEdge(e);
+
+                    vpEdgesBezier.push_back(e);
+                    vnIndexEdgeBezier.push_back(i);
+                    vbEdgeBezierOutlier.push_back(false);
+                }
+            }
         }
 
-        nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences;
+        nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences + nInitialBezierCorrespondences;
 
         // Set Previous Frame Vertex
         Frame *pFp = pFrame->mpPrevFrame;
@@ -5179,13 +5786,16 @@ namespace ORB_SLAM3
         // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
         const float chi2Mono[4] = {5.991, 5.991, 5.991, 5.991};
         const float chi2Stereo[4] = {15.6f, 9.8f, 7.815f, 7.815f};
+        const float chi2Bezier[4] = {3.841, 3.841, 3.841, 3.841};
         const int its[4] = {10, 10, 10, 10};
 
         int nBad = 0;
         int nBadMono = 0;
         int nBadStereo = 0;
+        int nBadBezier = 0;
         int nInliersMono = 0;
         int nInliersStereo = 0;
+        int nInliersBezier = 0;
         int nInliers = 0;
         for (size_t it = 0; it < 4; it++)
         {
@@ -5195,10 +5805,14 @@ namespace ORB_SLAM3
             nBad = 0;
             nBadMono = 0;
             nBadStereo = 0;
+            nBadBezier = 0;
             nInliers = 0;
             nInliersMono = 0;
             nInliersStereo = 0;
+            nInliersBezier = 0;
             float chi2close = 1.5 * chi2Mono[it];
+            vector<int> vBezierEdgeCount(pFrame->NB, 0);
+            vector<int> vBezierBadCount(pFrame->NB, 0);
 
             // 剔除外点
             for (size_t i = 0, iend = vpEdgesMono.size(); i < iend; i++)
@@ -5262,8 +5876,55 @@ namespace ORB_SLAM3
                     e->setRobustKernel(0);
             }
 
-            nInliers = nInliersMono + nInliersStereo;
-            nBad = nBadMono + nBadStereo;
+            for (size_t i = 0; i < vpEdgesBezier.size(); ++i)
+            {
+                EdgeBezierOnlyPose *e = vpEdgesBezier[i];
+                const size_t idx = vnIndexEdgeBezier[i];
+
+                if (idx >= pFrame->mvbBezierOutlier.size())
+                    continue;
+
+                vBezierEdgeCount[idx]++;
+
+                if (vbEdgeBezierOutlier[i])
+                    e->computeError();
+
+                if (e->chi2() > chi2Bezier[it] || !e->isDepthPositive())
+                {
+                    vbEdgeBezierOutlier[i] = true;
+                    e->setLevel(1);
+                    vBezierBadCount[idx]++;
+                }
+                else
+                {
+                    vbEdgeBezierOutlier[i] = false;
+                    e->setLevel(0);
+                }
+
+                if (it == 2)
+                    e->setRobustKernel(0);
+            }
+
+            for (int i = 0; i < pFrame->NB; ++i)
+            {
+                if (vBezierEdgeCount[i] > 0)
+                {
+                    bool isOutlier = (vBezierBadCount[i] * 2 > vBezierEdgeCount[i]);
+                    pFrame->mvbBezierOutlier[i] = isOutlier;
+
+                    if (isOutlier)
+                    {
+                        nBadBezier++;
+                    }
+                    else
+                    {
+                        nInliersBezier++;
+                    }
+                }
+            }
+
+            nInliers = nInliersMono + nInliersStereo + nInliersBezier;
+            nBad = nBadMono + nBadStereo + nBadBezier;
 
             if (optimizer.edges().size() < 10)
             {
@@ -5277,6 +5938,7 @@ namespace ORB_SLAM3
             nBad = 0;
             const float chi2MonoOut = 18.f;
             const float chi2StereoOut = 24.f;
+            const float chi2BezierOut = 16.f;
             EdgeMonoOnlyPose *e1;
             EdgeStereoOnlyPose *e2;
             for (size_t i = 0, iend = vnIndexEdgeMono.size(); i < iend; i++)
@@ -5299,9 +5961,36 @@ namespace ORB_SLAM3
                 else
                     nBad++;
             }
+
+            vector<int> vBezierOutEdgeCount(pFrame->NB, 0);
+            vector<int> vBezierOutBadCount(pFrame->NB, 0);
+            for (size_t i = 0, iend = vnIndexEdgeBezier.size(); i < iend; ++i)
+            {
+                const size_t idx = vnIndexEdgeBezier[i];
+                if (idx >= pFrame->mvbBezierOutlier.size())
+                    continue;
+
+                EdgeBezierOnlyPose *e3 = vpEdgesBezier[i];
+                e3->computeError();
+
+                vBezierOutEdgeCount[idx]++;
+                if (e3->chi2() >= chi2BezierOut)
+                    vBezierOutBadCount[idx]++;
+            }
+
+            for (int i = 0; i < pFrame->NB; ++i)
+            {
+                if (vBezierOutEdgeCount[i] == 0)
+                    continue;
+
+                const bool isOutlier = (vBezierOutBadCount[i] * 2 > vBezierOutEdgeCount[i]);
+                pFrame->mvbBezierOutlier[i] = isOutlier;
+                if (isOutlier)
+                    nBad++;
+            }
         }
 
-        nInliers = nInliersMono + nInliersStereo;
+        nInliers = nInliersMono + nInliersStereo + nInliersBezier;
 
         // Recover optimized pose, velocity and biases
         pFrame->SetImuPoseVelocity(VP->estimate().Rwb.cast<float>(), VP->estimate().twb.cast<float>(), VV->estimate().cast<float>());
@@ -5354,6 +6043,17 @@ namespace ORB_SLAM3
             if (!pFrame->mvbOutlier[idx])
             {
                 H.block<6, 6>(15, 15) += e->GetHessian();
+                tot_in++;
+            }
+            else
+                tot_out++;
+        }
+
+        for (size_t i = 0; i < vpEdgesBezier.size(); ++i)
+        {
+            if (!vbEdgeBezierOutlier[i])
+            {
+                H.block<6, 6>(15, 15) += vpEdgesBezier[i]->GetHessian();
                 tot_in++;
             }
             else

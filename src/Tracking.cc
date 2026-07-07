@@ -40,94 +40,6 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
-    namespace
-    {
-        bool BackProjectBezierSample(const Frame &frame,
-                                     const Eigen::Vector2f &samplePoint,
-                                     Eigen::Vector3f &cameraPoint)
-        {
-            if (frame.mImgDepth.empty())
-                return false;
-
-            const int xIdx = cvRound(samplePoint.x());
-            const int yIdx = cvRound(samplePoint.y());
-
-            if (xIdx < 0 || xIdx >= frame.mImgDepth.cols ||
-                yIdx < 0 || yIdx >= frame.mImgDepth.rows)
-            {
-                return false;
-            }
-
-            const float depthOrig = frame.mImgDepth.at<float>(yIdx, xIdx);
-            std::vector<float> validDepthList;
-
-            for (int xBias = -2; xBias <= 2; ++xBias)
-            {
-                for (int yBias = -2; yBias <= 2; ++yBias)
-                {
-                    const int currXIdx = xIdx + xBias;
-                    const int currYIdx = yIdx + yBias;
-
-                    if (currXIdx < Frame::mnMinX || currXIdx >= Frame::mnMaxX ||
-                        currYIdx < Frame::mnMinY || currYIdx >= Frame::mnMaxY)
-                    {
-                        continue;
-                    }
-
-                    const float depth = frame.mImgDepth.at<float>(currYIdx, currXIdx);
-                    if (depth > 0.02f && depth < 5.0f)
-                        validDepthList.push_back(depth);
-                }
-            }
-
-            if (validDepthList.size() < 8)
-                return false;
-
-            std::sort(validDepthList.begin(), validDepthList.end());
-
-            std::vector<float> adjustedDepthList;
-            adjustedDepthList.reserve(validDepthList.size());
-            const float relativeThreshold = 0.05f;
-            size_t firstJump = validDepthList.size();
-            for (size_t i = 1; i < validDepthList.size(); ++i)
-            {
-                const float delta = validDepthList[i] - validDepthList[i - 1];
-                const float base = validDepthList[i - 1];
-                const float relativeChange = delta / base;
-
-                if (std::fabs(relativeChange) > relativeThreshold)
-                {
-                    firstJump = i;
-                    break;
-                }
-            }
-
-            adjustedDepthList.assign(validDepthList.begin(),
-                                     validDepthList.begin() + firstJump);
-            if (adjustedDepthList.empty())
-                return false;
-
-            const size_t partitionSize = adjustedDepthList.size();
-            const float medianDepth = (partitionSize % 2 == 0)
-                                          ? 0.5f * (adjustedDepthList[partitionSize / 2 - 1] +
-                                                    adjustedDepthList[partitionSize / 2])
-                                          : adjustedDepthList[partitionSize / 2];
-
-            const float adjustedDepth =
-                depthOrig >= adjustedDepthList.front() && depthOrig <= adjustedDepthList.back()
-                    ? depthOrig
-                    : medianDepth;
-
-            if (adjustedDepth <= 0.02f || adjustedDepth >= 5.0f)
-                return false;
-
-            cameraPoint = Eigen::Vector3f((samplePoint.x() - Frame::cx) * Frame::invfx * adjustedDepth,
-                                          (samplePoint.y() - Frame::cy) * Frame::invfy * adjustedDepth,
-                                          adjustedDepth);
-            return true;
-        }
-    }
-
     Tracking::Tracking(System *pSys, ORBVocabulary *pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Atlas *pAtlas, KeyFrameDatabase *pKFDB, const string &strSettingPath, const int sensor, Settings *settings, const string &_nameSeq) : mState(NO_IMAGES_YET), mSensor(sensor), mTrackedFr(0), mbStep(false),
                                                                                                                                                                                                                                                   mbOnlyTracking(false), mbMapUpdated(false), mbVO(false), mpORBVocabulary(pVoc), mpKeyFrameDB(pKFDB),
                                                                                                                                                                                                                                                   mbReadyToInitializate(false), mpSystem(pSys), mpViewer(NULL), bStepByStep(false),
@@ -2402,6 +2314,17 @@ namespace ORB_SLAM3
                         }
                 }
 
+                for (int i = 0; i < mCurrentFrame.NB; i++)
+                {
+                    MapBezier *pMP = mCurrentFrame.mvpMapBeziers[i];
+                    if (pMP)
+                        if (pMP->Observations() < 1)
+                        {
+                            mCurrentFrame.mvbBezierOutlier[i] = false;
+                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                        }
+                }
+
                 // Delete temporal MapPoints
                 for (list<MapPoint *>::iterator lit = mlpTemporalPoints.begin(), lend = mlpTemporalPoints.end(); lit != lend; lit++)
                 {
@@ -2436,6 +2359,12 @@ namespace ORB_SLAM3
                 {
                     if (mCurrentFrame.mvpMapPoints[i] && mCurrentFrame.mvbOutlier[i])
                         mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                }
+
+                for (int i = 0; i < mCurrentFrame.NB; i++)
+                {
+                    if (mCurrentFrame.mvpMapBeziers[i] && mCurrentFrame.mvbBezierOutlier[i])
+                        mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
                 }
             }
 
@@ -2568,16 +2497,18 @@ namespace ORB_SLAM3
 
                 const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
                 const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
-                for (int i = 0; i < mCurrentFrame.NB; i++)
+                for (int j = 0; j < mCurrentFrame.NB; j++)
                 {
                     vector<Eigen::Vector3f> bezier3D;
-                    const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
-                    for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
+                    const BezierCurve &curve = mCurrentFrame.mvBezierCurves[j];
+                    for (int k = 0; k < curve.sampledPoints.size(); k++)
                     {
                         Eigen::Vector3f pc;
-                        if (!BackProjectBezierSample(mCurrentFrame, samplePoint, pc))
-                            continue;
-
+                        assert(curve.sampledPoints.size() == curve.depths.size());
+                        float depth = curve.depths[k];
+                        float x3d = depth * mCurrentFrame.invfx * (curve.sampledPoints[k][0] - mCurrentFrame.cx);
+                        float y3d = depth * mCurrentFrame.invfy * (curve.sampledPoints[k][1] - mCurrentFrame.cy);
+                        pc << x3d, y3d, depth;
                         bezier3D.push_back(Rwc * pc + Ow);
                     }
 
@@ -2585,13 +2516,13 @@ namespace ORB_SLAM3
                         continue;
 
                     MapBezier *pNewMB = new MapBezier(bezier3D, pKFini, mpAtlas->GetCurrentMap());
-                    pNewMB->AddObservation(pKFini, i);
-                    pKFini->AddMapBezier(pNewMB, i);
+                    pNewMB->AddObservation(pKFini, j);
+                    pKFini->AddMapBezier(pNewMB, j);
                     //
                     //
                     mpAtlas->AddMapBezier(pNewMB);
 
-                    mCurrentFrame.mvpMapBeziers[i] = pNewMB;
+                    mCurrentFrame.mvpMapBeziers[j] = pNewMB;
                 }
             }
             else
@@ -2634,10 +2565,12 @@ namespace ORB_SLAM3
 
             mvpLocalKeyFrames.push_back(pKFini);
             mvpLocalMapPoints = mpAtlas->GetAllMapPoints();
+            mvpLocalMapBeziers = mpAtlas->GetAllMapBeziers();
             mpReferenceKF = pKFini;
             mCurrentFrame.mpReferenceKF = pKFini;
 
             mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
+            mpAtlas->SetReferenceMapBeziers(mvpLocalMapBeziers);
 
             mpAtlas->GetCurrentMap()->mvpKeyFrameOrigins.push_back(pKFini);
 
@@ -2989,6 +2922,23 @@ namespace ORB_SLAM3
             }
         }
 
+        for (int i = 0; i < mCurrentFrame.NB; i++)
+        {
+            if (mCurrentFrame.mvpMapBeziers[i])
+            {
+                if (mCurrentFrame.mvbBezierOutlier[i])
+                {
+                    MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
+
+                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                    mCurrentFrame.mvbBezierOutlier[i] = false;
+                    pMB->mbTrackInView = false;
+                    pMB->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nBezierMatches--;
+                }
+            }
+        }
+
         if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             return true;
         else
@@ -3184,16 +3134,6 @@ namespace ORB_SLAM3
         threadPoints.join();
         threadBezier.join();
 
-        // TOO check outliers before PO
-        // int aux1 = 0, aux2 = 0;
-        // for (int i = 0; i < mCurrentFrame.N; i++)
-        //     if (mCurrentFrame.mvpMapPoints[i])
-        //     {
-        //         aux1++;
-        //         if (mCurrentFrame.mvbOutlier[i])
-        //             aux2++;
-        //     }
-
         int inliers;
         if (!mpAtlas->isImuInitialized())
             Optimizer::PoseOptimization(&mCurrentFrame);
@@ -3220,15 +3160,6 @@ namespace ORB_SLAM3
             }
         }
 
-        // aux1 = 0, aux2 = 0;
-        // for (int i = 0; i < mCurrentFrame.N; i++)
-        //     if (mCurrentFrame.mvpMapPoints[i])
-        //     {
-        //         aux1++;
-        //         if (mCurrentFrame.mvbOutlier[i])
-        //             aux2++;
-        //     }
-
         mnMatchesInliers = 0;
 
         // Update MapPoints Statistics
@@ -3249,6 +3180,24 @@ namespace ORB_SLAM3
                 }
                 else if (mSensor == System::STEREO)
                     mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+            }
+        }
+
+        for (int i = 0; i < mCurrentFrame.NB; i++)
+        {
+            if (mCurrentFrame.mvpMapBeziers[i])
+            {
+                if (!mCurrentFrame.mvbBezierOutlier[i])
+                {
+                    mCurrentFrame.mvpMapBeziers[i]->IncreaseFound();
+                    if (!mbOnlyTracking)
+                    {
+                        if (mCurrentFrame.mvpMapBeziers[i]->Observations() > 0)
+                            mnMatchesInliers += mCurrentFrame.mvpMapBeziers[i]->NP;
+                    }
+                    else
+                        mnMatchesInliers += mCurrentFrame.mvpMapBeziers[i]->NP;
+                }
             }
         }
 
@@ -3582,15 +3531,14 @@ namespace ORB_SLAM3
                 {
                     vector<Eigen::Vector3f> bezier3D;
                     const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
-                    for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
+                    for (int k = 0; k < curve.sampledPoints.size(); k++)
                     {
                         Eigen::Vector3f pc;
-                        if (!BackProjectBezierSample(mCurrentFrame, samplePoint, pc))
-                        {
-                            spdlog::warn("Invalid depth for bezier point, skipping");
-                            continue;
-                        }
-
+                        assert(curve.sampledPoints.size() == curve.depths.size());
+                        float depth = curve.depths[k];
+                        float x3d = depth * mCurrentFrame.invfx * (curve.sampledPoints[k].x() - mCurrentFrame.cx);
+                        float y3d = depth * mCurrentFrame.invfy * (curve.sampledPoints[k].y() - mCurrentFrame.cy);
+                        pc << x3d, y3d, depth;
                         bezier3D.push_back(Rwc * pc + Ow);
                     }
 
@@ -3699,80 +3647,48 @@ namespace ORB_SLAM3
 
     void Tracking::SearchLocalBeziers()
     {
+        for (vector<MapBezier *>::iterator vit = mCurrentFrame.mvpMapBeziers.begin(), vend = mCurrentFrame.mvpMapBeziers.end(); vit != vend; vit++)
+        {
+            MapBezier *pMB = *vit;
+            if (pMB)
+            {
+                if (pMB->isBad())
+                {
+                    *vit = static_cast<MapBezier *>(NULL);
+                }
+                else
+                {
+                    pMB->IncreaseVisible();
+                    pMB->mnLastFrameSeen = mCurrentFrame.mnId;
+                    pMB->mbTrackInView = false;
+                }
+            }
+        }
+
+        int nToMatch = 0;
+
+        for (vector<MapBezier *>::iterator vit = mvpLocalMapBeziers.begin(), vend = mvpLocalMapBeziers.end(); vit != vend; vit++)
+        {
+            MapBezier *pMB = *vit;
+
+            if (pMB->mnLastFrameSeen == mCurrentFrame.mnId)
+                continue;
+            if (pMB->isBad())
+                continue;
+            // Project (this fills MapPoint variables for matching)
+            if (mCurrentFrame.isInFrustum(pMB))
+            {
+                pMB->IncreaseVisible();
+                nToMatch++;
+            }
+        }
+
+        if (nToMatch > 0)
+        {
+            BezierMatcher matcher;
+            matcher.SearchByProjection(mCurrentFrame, mvpLocalMapBeziers);
+        }
     }
-
-    // void Tracking::SearchLocalBeziers()
-    // {
-    //     // Do not search map points already matched
-    //     for (vector<MapBezier *>::iterator vit = mCurrentFrame.mvpMapBeziers.begin(), vend = mCurrentFrame.mvpMapBeziers.end(); vit != vend; vit++)
-    //     {
-    //         MapBezier *pMB = *vit;
-    //         if (pMB)
-    //         {
-    //             if (pMB->isBad())
-    //             {
-    //                 *vit = static_cast<MapBezier *>(NULL);
-    //             }
-    //             else
-    //             {
-    //                 pMB->IncreaseVisible();
-    //                 pMB->mnTrackReferenceForFrame = mCurrentFrame.mnId;
-    //                 pMB->mbTrackInView = false;
-    //             }
-    //         }
-    //     }
-
-    //     int nToMatch = 0;
-
-    //     // Project points in frame and check its visibility
-    //     for (vector<MapBezier *>::iterator vit = mvpLocalMapBeziers.begin(), vend = mvpLocalMapBeziers.end(); vit != vend; vit++)
-    //     {
-    //         MapBezier *pMB = *vit;
-
-    //         if (pMB->mnTrackReferenceForFrame == mCurrentFrame.mnId)
-    //             continue;
-    //         if (pMB->isBad())
-    //             continue;
-    //         // Project (this fills MapBezier variables for matching)
-    //         if (mCurrentFrame.isInFrustum(pMB))
-    //         {
-    //             pMB->IncreaseVisible();
-    //             nToMatch++;
-    //         }
-    //         if (pMB->mbTrackInView)
-    //         {
-    //             mCurrentFrame.mmProjectPoints[pMB->mnId] = cv::Point2f(pMB->mTrackProjX, pMB->mTrackProjY);
-    //         }
-    //     }
-
-    //     if (nToMatch > 0)
-    //     {
-    //         ORBmatcher matcher(0.8);
-    //         int th = 1;
-    //         if (mSensor == System::RGBD || mSensor == System::IMU_RGBD)
-    //             th = 3;
-    //         if (mpAtlas->isImuInitialized())
-    //         {
-    //             if (mpAtlas->GetCurrentMap()->GetIniertialBA2())
-    //                 th = 2;
-    //             else
-    //                 th = 6;
-    //         }
-    //         else if (!mpAtlas->isImuInitialized() && (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
-    //         {
-    //             th = 10;
-    //         }
-
-    //         // If the camera has been relocalised recently, perform a coarser search
-    //         if (mCurrentFrame.mnId < mnLastRelocFrameId + 2)
-    //             th = 5;
-
-    //         if (mState == LOST || mState == RECENTLY_LOST) // Lost for less than 1 second
-    //             th = 15;                                   // 15
-
-    //         int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapBeziers, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
-    //     }
-    // }
 
     // 1、把当前局部地图点交给 Atlas，用于显示
     // 2、更新局部关键帧和局部地图点

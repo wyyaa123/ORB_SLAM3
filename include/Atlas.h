@@ -106,6 +106,8 @@ public:
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
+    std::vector<MapBezier*> GetAllMapBeziers();
+    std::vector<MapBezier*> GetReferenceMapBeziers();
 
     vector<Map*> GetAllMaps();
 

@@ -383,10 +383,12 @@ namespace ORB_SLAM3
         map<KeyFrame *, int> KFcounter;
 
         vector<MapPoint *> vpMP;
+        vector<MapBezier *> vpMB;
 
         {
             unique_lock<mutex> lockMPs(mMutexFeatures);
             vpMP = mvpMapPoints;
+            vpMB = mvpMapBeziers;
         }
 
         // For all map points in keyframe check in which other keyframes are they seen
@@ -404,6 +406,33 @@ namespace ORB_SLAM3
             map<KeyFrame *, tuple<int, int>> observations = pMP->GetObservations();
 
             for (map<KeyFrame *, tuple<int, int>>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+            {
+                if (mit->first->mnId == mnId || mit->first->isBad() || mit->first->GetMap() != mpMap)
+                    continue;
+                KFcounter[mit->first]++;
+            }
+        }
+
+        // Curve observations also contribute to the covisibility graph. Count
+        // each shared MapBezier once to avoid overweighting duplicated matches
+        // in the same keyframe.
+        set<MapBezier *> spCountedBeziers;
+        for (vector<MapBezier *>::iterator vit = vpMB.begin(), vend = vpMB.end(); vit != vend; vit++)
+        {
+            MapBezier *pMB = *vit;
+
+            if (!pMB)
+                continue;
+
+            if (pMB->isBad() || pMB->GetMap() != mpMap)
+                continue;
+
+            if (!spCountedBeziers.insert(pMB).second)
+                continue;
+
+            map<KeyFrame *, int> observations = pMB->GetObservations();
+
+            for (map<KeyFrame *, int>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
             {
                 if (mit->first->mnId == mnId || mit->first->isBad() || mit->first->GetMap() != mpMap)
                     continue;
@@ -791,14 +820,28 @@ namespace ORB_SLAM3
 
     void KeyFrame::EraseMapBezierMatch(MapBezier *pMB)
     {
-        int index = pMB->GetIndexInKeyFrame(this);
-        if (index != -1)
-            mvpMapBeziers[index] = static_cast<MapBezier *>(NULL);
+        unique_lock<mutex> lock(mMutexFeatures);
+        for (size_t i = 0, iend = mvpMapBeziers.size(); i < iend; ++i)
+        {
+            if (mvpMapBeziers[i] == pMB)
+                mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+        }
     }
 
     void KeyFrame::ReplaceMapBezierMatch(const int &idx, MapBezier *pMB)
     {
+        unique_lock<mutex> lock(mMutexFeatures);
         mvpMapBeziers[idx] = pMB;
+    }
+
+    void KeyFrame::ReplaceMapBezierMatch(MapBezier *pOldMB, MapBezier *pNewMB)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        for (size_t i = 0, iend = mvpMapBeziers.size(); i < iend; ++i)
+        {
+            if (mvpMapBeziers[i] == pOldMB)
+                mvpMapBeziers[i] = pNewMB;
+        }
     }
 
     std::set<MapBezier *> KeyFrame::GetMapBeziers()

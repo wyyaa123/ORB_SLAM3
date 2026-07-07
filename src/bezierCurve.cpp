@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 Eigen::Vector2f evaluateBezier(const std::vector<Eigen::Vector2f> &points, double t)
 {
@@ -235,7 +234,7 @@ Eigen::Vector2f BezierCurve::closestPointOnCurve(const Eigen::Vector2f& p, int c
     for (int i = 0; i <= coarseSamples; ++i)
     {
         double t = static_cast<double>(i) / static_cast<double>(coarseSamples);
-        float d2 = evaluateBezier(controlPoints, t).squaredNorm();
+        float d2 = (evaluateBezier(controlPoints, t) - p).squaredNorm();
 
         if (d2 < bestD2)
         {
@@ -268,10 +267,10 @@ Eigen::Vector2f BezierCurve::closestPointOnCurve(const Eigen::Vector2f& p, int c
             break;
 
         double oldT = t;
-        double oldD2 = evaluateBezier(controlPoints, oldT).squaredNorm();
+        double oldD2 = (evaluateBezier(controlPoints, oldT) - p).squaredNorm();
 
         double newT = std::max(0.0, std::min(1.0, t - step));
-        double newD2 = evaluateBezier(controlPoints, newT).squaredNorm();
+        double newD2 = (evaluateBezier(controlPoints, newT) - p).squaredNorm();
 
         // 3. 简单 line search，防止 Newton 跑到更差的位置
         int lineSearchCount = 0;
@@ -290,9 +289,9 @@ Eigen::Vector2f BezierCurve::closestPointOnCurve(const Eigen::Vector2f& p, int c
     }
 
     // 4. 与端点再比较一次，防止最近点在端点
-    double dStart = evaluateBezier(controlPoints, 0.0).squaredNorm();
-    double dEnd = evaluateBezier(controlPoints, 1.0).squaredNorm();
-    double dMid = evaluateBezier(controlPoints, t).squaredNorm();
+    double dStart = (evaluateBezier(controlPoints, 0.0) - p).squaredNorm();
+    double dEnd = (evaluateBezier(controlPoints, 1.0) - p).squaredNorm();
+    double dMid = (evaluateBezier(controlPoints, t) - p).squaredNorm();
 
     if (dStart <= dMid && dStart <= dEnd)
         return evaluateBezier(controlPoints, 0.0);
@@ -301,6 +300,38 @@ Eigen::Vector2f BezierCurve::closestPointOnCurve(const Eigen::Vector2f& p, int c
         return evaluateBezier(controlPoints, 1.0);
 
     return evaluateBezier(controlPoints, t);
+}
+
+bool BezierCurve::estimateNormalFromSamples(const Eigen::Vector2f &point, Eigen::Vector2d &normal) const
+{
+    if (sampledPoints.size() < 2)
+        return false;
+
+    size_t closestIdx = 0;
+    float minDist = DBL_MAX;
+    for (size_t i = 0; i < sampledPoints.size(); ++i)
+    {
+        const float dist = (sampledPoints[i] - point).squaredNorm();
+        if (dist < minDist)
+        {
+            minDist = dist;
+            closestIdx = i;
+        }
+    }
+
+    Eigen::Vector2f tangent;
+    if (closestIdx == 0)
+        tangent = sampledPoints[1] - sampledPoints[0];
+    else if (closestIdx + 1 == sampledPoints.size())
+        tangent = sampledPoints[closestIdx] - sampledPoints[closestIdx - 1];
+    else
+        tangent = sampledPoints[closestIdx + 1] - sampledPoints[closestIdx - 1];
+
+    if (tangent.squaredNorm() < 1e-12f)
+        return false;
+
+    normal << -static_cast<double>(tangent.y()), static_cast<double>(tangent.x());
+    return true;
 }
 
 BezierCurveFitter::BezierCurveFitter(double rho_p, std::size_t minSplitPoints)

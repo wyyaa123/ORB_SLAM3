@@ -15,14 +15,35 @@ namespace ORB_SLAM3
     class Frame;
     class MapBezier;
 
+    struct CurveCandidate
+    {
+        int votes = 0;
+        float dist2Sum = 0.0f;
+        int minMapIdx = DBL_MAX;
+        int maxMapIdx = -1;
+        vector<int> targetSampleIdxs;
+    };
+
+    struct AcceptedCandidate
+    {
+        size_t targetIdx = 0;
+        int votes = 0;
+        float meanDist2 = 0.0f;
+        float mapCoverage = 0.0f;
+        float targetCoverage = 0.0f;
+        float mapSpanCoverage = 0.0f;
+    };
+
     class BezierMatcher
     {
     public:
-        BezierMatcher();
+        BezierMatcher() {};
 
         int SearchByProjection(Frame &currentFrame, const Frame &lastFrame);
 
         int SearchByProjection(KeyFrame *pKF, Frame &currentFrame, std::vector<MapBezier *> &vpMapBezierMatches);
+
+        int SearchByProjection(KeyFrame *pReferenceKF, KeyFrame *pTargetKF, std::vector<MapBezier *> &vpMapBezierMatches);
 
         int SearchByProjection(Frame &F, const std::vector<MapBezier *> &vpMapBeziers);
 
@@ -30,7 +51,7 @@ namespace ORB_SLAM3
 
         int Fuse(KeyFrame *targetKF, const std::vector<MapBezier *> &vpMapBeziers);
 
-        int Fuse(KeyFrame* pKF, cv::Mat Scw, const std::vector<MapBezier*> &vpBeziers, float th, vector<MapBezier *> &vpReplaceBeziers);
+        int Fuse(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapBezier *> &vpBeziers, float th, vector<MapBezier *> &vpReplaceBeziers);
     };
 } // namespace ORB_SLAM3
 

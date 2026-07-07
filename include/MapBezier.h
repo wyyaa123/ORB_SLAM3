@@ -48,10 +48,13 @@ namespace ORB_SLAM3
     public:
         static long unsigned int nNextId;
         long unsigned int mnId;
+        long int mnFirstKFid;
+        long int mnFirstFrame;
+        int nObs;
 
         static std::mutex mGlobalMutex;
 
-        int nObs;
+        long unsigned int mnLastFrameSeen;
 
         bool mbTrackInView;
         float mTrackProjX;
@@ -59,6 +62,8 @@ namespace ORB_SLAM3
         long unsigned int mnTrackReferenceForFrame;
 
         long unsigned int mnBALocalForMerge;
+
+        int NP;
     protected:
         std::vector<Eigen::Vector3f> mvWorldPoints;
         std::map<KeyFrame *, int> mObservations;
@@ -69,9 +74,6 @@ namespace ORB_SLAM3
 
         bool mbBad;
         MapBezier *mpReplaced;
-
-        long int mnFirstKFid;
-        long int mnFirstFrame;
 
         // Tracking counters
         int mnVisible;

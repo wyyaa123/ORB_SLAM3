@@ -720,6 +720,8 @@ namespace ORB_SLAM3
         if (!pMB)
             return false;
 
+        pMB->mbTrackInView = false;
+
         const std::vector<Eigen::Vector3f> worldPoints = pMB->GetWorldPoints();
         if (worldPoints.size() < 2)
             return false;
@@ -734,7 +736,7 @@ namespace ORB_SLAM3
         {
             const Eigen::Vector3f cameraPoint = mRcw * worldPoint + mtcw;
 
-            if (cameraPoint.z() <= 0)
+            if (cameraPoint.z() <= 0.0f)
             {
                 previousPointVisible = false;
                 continue;
@@ -755,7 +757,6 @@ namespace ORB_SLAM3
             ++visiblePointCount;
             projectionSum += projection;
 
-            // Only accumulate connected visible pieces of the sampled curve.
             if (previousPointVisible)
                 projectedLength += (projection - previousProjection).norm();
 
@@ -763,8 +764,6 @@ namespace ORB_SLAM3
             previousPointVisible = true;
         }
 
-        // One isolated sample is not enough to represent a visible curve, and
-        // very short projections are unstable for edge-based association.
         if (visiblePointCount < 2 || projectedLength < 10.0f)
             return false;
 
@@ -774,9 +773,10 @@ namespace ORB_SLAM3
         pMB->mTrackProjX = projectionCenter.x();
         pMB->mTrackProjY = projectionCenter.y();
         pMB->mbTrackInView = true;
+
         return true;
     }
-
+    
     bool Frame::ProjectPointDistort(MapPoint *pMP, cv::Point2f &kp, float &u, float &v)
     {
 
@@ -1489,6 +1489,7 @@ namespace ORB_SLAM3
                 curve.cls = mvEdges[i].cls;
 
                 curve.sampleByArcLengthSpacing(3);
+                curve.depths = vector<float>(curve.sampledPoints.size(), -1.0f);
 
                 mvBezierCurves.push_back(curve);
             }
@@ -1790,51 +1791,131 @@ namespace ORB_SLAM3
         }
     }
 
+    inline float Frame::assignProperty3DEach(Eigen::Vector2f &pt)
+    {
+        int x_idx = cvRound(pt[0]);
+        int y_idx = cvRound(pt[1]);
+
+        if (x_idx < 0 || x_idx >= mImgDepth.cols || y_idx < 0 || y_idx >= mImgDepth.rows)
+        {
+            return -1.0f;
+        }
+
+        float depth_orig = mImgDepth.at<float>(y_idx, x_idx);
+
+        std::vector<float> validDepthList;
+        int patch_total = 0;
+        for (int x_bias = -2; x_bias <= 2; ++x_bias)
+        {
+            for (int y_bias = -2; y_bias <= 2; ++y_bias)
+            {
+                int curr_x_idx = x_idx + x_bias;
+                int curr_y_idx = y_idx + y_bias;
+
+                if (curr_x_idx < mnMinX || curr_x_idx >= mnMaxX || curr_y_idx < mnMinY || curr_y_idx >= mnMaxY)
+                    continue;
+
+                patch_total += 1;
+                float depth = mImgDepth.at<float>(curr_y_idx, curr_x_idx);
+                if (depth > 0.02 && depth < 5.0)
+                    validDepthList.push_back(depth);
+            }
+        }
+        std::sort(validDepthList.begin(), validDepthList.end());
+        int size = validDepthList.size();
+        float adjusted_depth = 0;
+
+        if (size >= 8)
+        {
+            std::vector<size_t> jump_indices;
+            float rel_thres = 0.05;
+            for (size_t i = 1; i < validDepthList.size(); ++i)
+            {
+                float dx = validDepthList[i] - validDepthList[i - 1];
+                float x = validDepthList[i - 1];
+                float relative_change = dx / x;
+
+                if (std::fabs(relative_change) > rel_thres)
+                {
+                    jump_indices.push_back(i);
+                    break;
+                }
+            }
+
+            std::vector<float> adjustDepthList;
+            if (jump_indices.empty())
+            {
+                adjustDepthList = validDepthList;
+            }
+            else
+            {
+                size_t first_jump = jump_indices[0];
+                adjustDepthList = std::vector<float>(validDepthList.begin(), validDepthList.begin() + first_jump);
+            }
+
+            int partitionSize = adjustDepthList.size();
+            float medianValue = (partitionSize % 2 == 0) ? (adjustDepthList[partitionSize / 2 - 1] + adjustDepthList[partitionSize / 2]) / 2.0 : adjustDepthList[partitionSize / 2];
+            if (depth_orig >= adjustDepthList.front() && depth_orig <= adjustDepthList.back())
+            {
+                adjusted_depth = depth_orig;
+            }
+            else
+            {
+                adjusted_depth = medianValue;
+            }
+        }
+
+        if (adjusted_depth > 0.02 && adjusted_depth < 5.0)
+            return adjusted_depth;
+
+        return -1;
+    }
+
     void Frame::BezierCullingDepth()
     {
         for (auto curveIter = mvBezierCurves.begin(); curveIter != mvBezierCurves.end();)
         {
-            BezierCurve &curve = *curveIter;
-            const int totalPointCount = static_cast<int>(curve.sampledPoints.size());
+            BezierCurve &currentCurve = *curveIter;
+            const size_t totalPointCount = currentCurve.sampledPoints.size();
 
-            if (totalPointCount < 2)
+            if (totalPointCount == 0)
             {
                 curveIter = mvBezierCurves.erase(curveIter);
                 continue;
             }
 
-            int validPointCount = 0;
-            for (const Eigen::Vector2f &samplePoint : curve.sampledPoints)
+            currentCurve.depths.resize(totalPointCount, -1.0f);
+
+            vector<Eigen::Vector2f> validSampledPoints;
+            vector<float> validDepths;
+            validSampledPoints.reserve(totalPointCount);
+            validDepths.reserve(totalPointCount);
+
+            for (size_t i = 0; i < totalPointCount; ++i)
             {
-                orderedEdgePoint point(samplePoint.x(), samplePoint.y());
-                assignProperty3DEach(point);
-                if (point.depth > 0.02f && point.depth < 5.0f)
-                    validPointCount++;
+                float depth = assignProperty3DEach(currentCurve.sampledPoints[i]);
+                currentCurve.depths[i] = depth;
+
+                if (depth > 0.2f && depth < 5.0f)
+                {
+                    validSampledPoints.push_back(currentCurve.sampledPoints[i]);
+                    validDepths.push_back(depth);
+                }
             }
 
-            const float validRatio = static_cast<float>(validPointCount) / static_cast<float>(totalPointCount);
+            const float validRatio = static_cast<float>(validSampledPoints.size()) /
+                                     static_cast<float>(totalPointCount);
 
-            if (validRatio < 0.3f)
+            if (validRatio >= 0.3f)
+            {
+                currentCurve.sampledPoints.swap(validSampledPoints);
+                currentCurve.depths.swap(validDepths);
+                ++curveIter;
+            }
+            else
             {
                 curveIter = mvBezierCurves.erase(curveIter);
-                continue;
             }
-
-            auto newEnd = std::remove_if(curve.sampledPoints.begin(), curve.sampledPoints.end(),
-                                         [this](const Eigen::Vector2f &samplePoint)
-                                         {
-                                             orderedEdgePoint point(samplePoint.x(), samplePoint.y());
-                                             assignProperty3DEach(point);
-                                             return point.depth <= 0.02f || point.depth >= 5.0f;
-                                         });
-            curve.sampledPoints.erase(newEnd, curve.sampledPoints.end());
-
-            if (curve.sampledPoints.size() < 2)
-            {
-                curveIter = mvBezierCurves.erase(curveIter);
-                continue;
-            }
-            ++curveIter;
         }
     }
 

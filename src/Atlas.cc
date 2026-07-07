@@ -223,6 +223,18 @@ namespace ORB_SLAM3
         return mpCurrentMap->GetReferenceMapPoints();
     }
 
+    std::vector<MapBezier *> Atlas::GetAllMapBeziers()
+    {
+        unique_lock<mutex> lock(mMutexAtlas);
+        return mpCurrentMap->GetAllMapBeziers();
+    }
+
+    std::vector<MapBezier *> Atlas::GetReferenceMapBeziers()
+    {
+        unique_lock<mutex> lock(mMutexAtlas);
+        return mpCurrentMap->GetReferenceMapBeziers();
+    }
+
     vector<Map *> Atlas::GetAllMaps()
     {
         unique_lock<mutex> lock(mMutexAtlas);

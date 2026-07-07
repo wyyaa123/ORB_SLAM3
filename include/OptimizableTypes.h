@@ -120,6 +120,27 @@ namespace ORB_SLAM3
         GeometricCamera *pCamera;
     };
 
+    class EdgeSE3ProjectBezierPoint : public g2o::BaseBinaryEdge<1, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeSE3ProjectBezierPoint();
+
+        bool read(std::istream &is) override;
+
+        bool write(std::ostream &os) const override;
+
+        void computeError() override;
+
+        bool isDepthPositive() const;
+
+        void linearizeOplus() override;
+
+        Eigen::Vector2d normal;
+        GeometricCamera *pCamera;
+    };
+
     class EdgeSE3ProjectXYZ : public g2o::BaseBinaryEdge<2, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>
     {
     public:

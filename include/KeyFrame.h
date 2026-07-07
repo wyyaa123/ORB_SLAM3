@@ -265,6 +265,7 @@ namespace ORB_SLAM3
         void EraseMapBezierMatch(const int &idx);
         void EraseMapBezierMatch(MapBezier *pMB);
         void ReplaceMapBezierMatch(const int &idx, MapBezier *pMB);
+        void ReplaceMapBezierMatch(MapBezier *pOldMB, MapBezier *pNewMB);
         std::set<MapBezier *> GetMapBeziers();
         std::vector<MapBezier *> GetMapBezierMatches();
         int TrackedMapBeziers(const int &minObs);

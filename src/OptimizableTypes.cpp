@@ -461,4 +461,109 @@ namespace ORB_SLAM3
         return os.good();
     }
 
+    EdgeSE3ProjectBezierPoint::EdgeSE3ProjectBezierPoint()
+        : normal(Eigen::Vector2d::Zero()),
+          pCamera(nullptr)
+    {
+        information().setIdentity();
+    }
+
+    void EdgeSE3ProjectBezierPoint::computeError()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(_vertices[1] != nullptr);
+        assert(pCamera != nullptr);
+
+        const auto *vPoint =
+            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
+        const auto *vPose =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
+
+        const double normalNorm = normal.norm();
+        if (normalNorm <= 1e-12)
+        {
+            _error.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d projected =
+            pCamera->project(vPose->estimate().map(vPoint->estimate()));
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+
+        _error[0] = unitNormal.dot(projected - _measurement);
+    }
+
+    bool EdgeSE3ProjectBezierPoint::isDepthPositive() const
+    {
+        assert(_vertices[0] != nullptr);
+        assert(_vertices[1] != nullptr);
+
+        const auto *vPoint =
+            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
+        const auto *vPose =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
+
+        return vPose->estimate().map(vPoint->estimate()).z() > 0.0;
+    }
+
+    void EdgeSE3ProjectBezierPoint::linearizeOplus()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(_vertices[1] != nullptr);
+        assert(pCamera != nullptr);
+
+        const auto *vPoint =
+            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
+        const auto *vPose =
+            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
+
+        const g2o::SE3Quat T(vPose->estimate());
+        const Eigen::Vector3d Xw = vPoint->estimate();
+        const Eigen::Vector3d Xc = T.map(Xw);
+
+        const double normalNorm = normal.norm();
+        if (normalNorm <= 1e-12)
+        {
+            _jacobianOplusXi.setZero();
+            _jacobianOplusXj.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+        const Eigen::Matrix<double, 2, 3> projectJac = pCamera->projectJac(Xc);
+
+        _jacobianOplusXi =
+            unitNormal.transpose() * projectJac * T.rotation().toRotationMatrix();
+
+        const double x = Xc.x();
+        const double y = Xc.y();
+        const double z = Xc.z();
+
+        Eigen::Matrix<double, 3, 6> Jse3;
+        Jse3 << 0, z, -y, 1, 0, 0,
+            -z, 0, x, 0, 1, 0,
+            y, -x, 0, 0, 0, 1;
+
+        _jacobianOplusXj =
+            unitNormal.transpose() * projectJac * Jse3;
+    }
+
+    bool EdgeSE3ProjectBezierPoint::read(std::istream &is)
+    {
+        is >> _measurement[0] >> _measurement[1]
+           >> information()(0, 0)
+           >> normal[0] >> normal[1];
+
+        return static_cast<bool>(is);
+    }
+
+    bool EdgeSE3ProjectBezierPoint::write(std::ostream &os) const
+    {
+        os << measurement()[0] << " "
+           << measurement()[1] << " "
+           << information()(0, 0) << " "
+           << normal[0] << " " << normal[1];
+        return os.good();
+    }
+
 }

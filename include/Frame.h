@@ -361,7 +361,7 @@ namespace ORB_SLAM3
         void assignProperty3D();
 
         inline void assignProperty3DEach(orderedEdgePoint &pt);
-        inline void assignProperty3DEach(Eigen::Vector2f &pt);
+        inline float assignProperty3DEach(Eigen::Vector2f &pt);
 
         void BezierCullingDepth();
 

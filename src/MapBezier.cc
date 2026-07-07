@@ -8,9 +8,11 @@ namespace ORB_SLAM3
 
     MapBezier::MapBezier(const std::vector<Eigen::Vector3f> &vWorldPoints, KeyFrame *pRefKF, Map *pMap) : mnFirstKFid(pRefKF->mnId), mnFirstFrame(pRefKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mbBad(false),
                                                                                                           mpRefKF(pRefKF), mpMap(pMap), mnOriginMapId(pMap->GetId()), mpReplaced(nullptr),
-                                                                                                          mnVisible(1), mnFound(1)
+                                                                                                          mnVisible(1), mnFound(1), mnLastFrameSeen(0)
     {
         SetWorldPoints(vWorldPoints);
+
+        NP = vWorldPoints.size();
 
         std::unique_lock<std::mutex> lock(mpMap->mMutexPointCreation);
         mnId = nNextId++;
@@ -43,7 +45,7 @@ namespace ORB_SLAM3
                 mObservations.erase(pKF);
 
                 if (mpRefKF == pKF)
-                    mpRefKF = mObservations.begin()->first;
+                    mpRefKF = mObservations.empty() ? nullptr : mObservations.begin()->first;
 
                 if (!nObs)
                     bBad = true;
@@ -108,9 +110,7 @@ namespace ORB_SLAM3
         for (map<KeyFrame *, int>::iterator mit = obs.begin(), mend = obs.end(); mit != mend; mit++)
         {
             KeyFrame *pKF = mit->first;
-            int idx = mit->second;
-            if (idx != -1)
-                pKF->EraseMapBezierMatch(idx);
+            pKF->EraseMapBezierMatch(this);
         }
         mpMap->EraseMapBezier(this);
     }
@@ -144,7 +144,7 @@ namespace ORB_SLAM3
             {
                 if (indexes != -1)
                 {
-                    pKF->ReplaceMapBezierMatch(indexes, pMB);
+                    pKF->ReplaceMapBezierMatch(this, pMB);
                     pMB->AddObservation(pKF, indexes);
                 }
             }
@@ -152,7 +152,7 @@ namespace ORB_SLAM3
             {
                 if (indexes != -1)
                 {
-                    pKF->EraseMapBezierMatch(indexes);
+                    pKF->EraseMapBezierMatch(this);
                 }
             }
         }

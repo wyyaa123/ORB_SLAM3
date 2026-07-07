@@ -520,6 +520,95 @@ namespace ORB_SLAM3
         const int cam_idx;
     };
 
+    class EdgeBezierOnlyPose : public g2o::BaseUnaryEdge<1, Eigen::Vector2d, VertexPose>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeBezierOnlyPose(const Eigen::Vector3f &Xw_, const Eigen::Vector2d &normal_, int cam_idx_ = 0)
+            : Xw(Xw_.cast<double>()), normal(normal_), cam_idx(cam_idx_) {}
+
+        virtual bool read(std::istream &is) { return false; }
+        virtual bool write(std::ostream &os) const { return false; }
+
+        void computeError()
+        {
+            const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
+            const Eigen::Vector2d projected = VPose->estimate().Project(Xw, cam_idx);
+
+            const double n = normal.norm();
+            if (n <= 1e-12)
+            {
+                _error.setZero();
+                return;
+            }
+
+            const Eigen::Vector2d unitNormal = normal / n;
+            _error[0] = unitNormal.dot(_measurement - projected);
+        }
+
+        virtual void linearizeOplus();
+
+        bool isDepthPositive()
+        {
+            const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
+            return VPose->estimate().isDepthPositive(Xw, cam_idx);
+        }
+
+        Eigen::Matrix<double, 6, 6> GetHessian()
+        {
+            linearizeOplus();
+            return _jacobianOplusXi.transpose() * information() * _jacobianOplusXi;
+        }
+
+    public:
+        const Eigen::Vector3d Xw;
+        Eigen::Vector2d normal;
+        const int cam_idx;
+    };
+
+    class EdgeBezier : public g2o::BaseBinaryEdge<1, Eigen::Vector2d, g2o::VertexSBAPointXYZ, VertexPose>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeBezier(const Eigen::Vector2d &normal_, int cam_idx_ = 0)
+            : normal(normal_), cam_idx(cam_idx_) {}
+
+        virtual bool read(std::istream &is) { return false; }
+        virtual bool write(std::ostream &os) const { return false; }
+
+        void computeError()
+        {
+            const g2o::VertexSBAPointXYZ *VPoint = static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
+            const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[1]);
+            const Eigen::Vector2d projected = VPose->estimate().Project(VPoint->estimate(), cam_idx);
+
+            const double n = normal.norm();
+            if (n <= 1e-12)
+            {
+                _error.setZero();
+                return;
+            }
+
+            const Eigen::Vector2d unitNormal = normal / n;
+            _error[0] = unitNormal.dot(_measurement - projected);
+        }
+
+        virtual void linearizeOplus();
+
+        bool isDepthPositive()
+        {
+            const g2o::VertexSBAPointXYZ *VPoint = static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
+            const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[1]);
+            return VPose->estimate().isDepthPositive(VPoint->estimate(), cam_idx);
+        }
+
+    public:
+        Eigen::Vector2d normal;
+        const int cam_idx;
+    };
+
     class EdgeInertial : public g2o::BaseMultiEdge<9, Vector9d>
     {
     public:

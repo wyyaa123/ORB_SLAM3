@@ -28,7 +28,8 @@ public:
     int edge_ID;
     int cls;
     std::vector<Eigen::Vector2f> controlPoints; // 每条边缘可能有多段Bezier曲线，每段曲线由一组控制点定义
-    std::vector<Eigen::Vector3f> sampledPoints; // 从Bezier曲线上均匀采样得到的点列表
+    std::vector<Eigen::Vector2f> sampledPoints; // 从Bezier曲线上均匀采样得到的点列表
+    std::vector<float> depths;
     std::vector<orderedEdgePoint> edge;
     BezierCurve() : edge_ID(-1), cls(-1) {}
 
@@ -38,6 +39,7 @@ public:
     Eigen::Vector2f derivative(double t) const;
     Eigen::Vector2f secondDerivative(double t) const;
     Eigen::Vector2f closestPointOnCurve(const Eigen::Vector2f& p, int coarseSamples, int newtonIterations) const;
+    bool estimateNormalFromSamples(const Eigen::Vector2f &point, Eigen::Vector2d &normal) const;
 
     void reserve(size_t controlPointCount) { controlPoints.reserve(controlPointCount); }
     void push_back(const Eigen::Vector2f &point) { controlPoints.push_back(point); }
