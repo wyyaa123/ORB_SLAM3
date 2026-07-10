@@ -1869,8 +1869,7 @@ namespace ORB_SLAM3
 
         if (bStepByStep)
         {
-            // std::cout << "Tracking: Waiting to the next step" << std::endl;
-            spdlog::info("Tracking: Waiting to the next step");
+            std::cout << "Tracking: Waiting to the next step" << std::endl;
             while (!mbStep && bStepByStep)
                 usleep(500);
             mbStep = false;
@@ -1878,8 +1877,7 @@ namespace ORB_SLAM3
 
         if (mpLocalMapper->mbBadImu)
         {
-            // cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
-            spdlog::info("TRACK: Reset map because local mapper set the bad imu flag");
+            cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
             mpSystem->ResetActiveMap();
             return;
         }
@@ -1887,16 +1885,14 @@ namespace ORB_SLAM3
         Map *pCurrentMap = mpAtlas->GetCurrentMap();
         if (!pCurrentMap)
         {
-            // cout << "ERROR: There is not an active map in the atlas" << endl;
-            spdlog::warn("ERROR: There is not an active map in the atlas");
+            cerr << "ERROR: There is not an active map in the atlas" << endl;
         }
 
         if (mState != NO_IMAGES_YET)
         {
             if (mLastFrame.mTimeStamp > mCurrentFrame.mTimeStamp)
             {
-                // cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
-                spdlog::error("ERROR: Frame with a timestamp older than previous frame detected!");
+                cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
                 unique_lock<mutex> lock(mMutexImuQueue);
                 mlQueueImuData.clear();
                 CreateMapInAtlas();
@@ -2953,10 +2949,8 @@ namespace ORB_SLAM3
         Sophus::SE3f Tlr = mlRelativeFramePoses.back();
         mLastFrame.SetPose(Tlr * pRef->GetPose()); // T_c_r * T_r_w = T_c_w
 
-        // spdlog::info("judgement");
         if (mnLastKeyFrameId == mLastFrame.mnId || mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR || !mbOnlyTracking)
         {
-            // spdlog::info("Skipping last frame update");
             return;
         }
 
@@ -3033,17 +3027,14 @@ namespace ORB_SLAM3
         // Create "visual odometry" points if in Localization Mode
         UpdateLastFrame(); // 更新上一帧的位姿
 
-        // spdlog::info("Judgement state update strategy: ");
         if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
         {
             // Predict state with IMU if it is initialized and it doesnt need reset
-            // spdlog::info("Predicting state with IMU");
             PredictStateIMU();
             return true;
         }
         else
         {
-            // spdlog::info("Predicting state with constant velocity model");
             mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
         }
 

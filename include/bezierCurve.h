@@ -5,7 +5,6 @@
 #include <vector>
 #include "edge.h"
 #include <Eigen/Core>
-#include <spdlog/spdlog.h>
 
 Eigen::Vector2f evaluateBezier(const std::vector<Eigen::Vector2f> &points, double t);
 Eigen::Vector2f evaluate(const std::vector<Eigen::Vector2f> &controlPoints, double t);

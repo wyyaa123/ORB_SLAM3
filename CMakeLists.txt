@@ -34,10 +34,9 @@ endif()
 
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
-set(OpenCV_DIR /home/wyyaa123/ORB_SLAM3/Thirdparty/opencv4/lib/cmake/opencv4)
-find_package(OpenCV 4.4)
+find_package(OpenCV 4.2)
 if(NOT OpenCV_FOUND)
-    message(FATAL_ERROR "OpenCV >= 4.4 not found.")
+    message(FATAL_ERROR "OpenCV >= 4.2 not found.")
 endif()
 
 MESSAGE("OPENCV VERSION:")
@@ -53,7 +52,6 @@ ${PROJECT_SOURCE_DIR}/include
 ${PROJECT_SOURCE_DIR}/include/CameraModels
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
-${PROJECT_SOURCE_DIR}/Thirdparty/spdlog/include
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
@@ -143,21 +141,20 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
-${PROJECT_SOURCE_DIR}/Thirdparty/spdlog/build/libspdlog.a
 -lboost_serialization
 -lcrypto
 TBB::tbb
 )
 
-# If RealSense SDK is found the library is added and its examples compiled
-if(realsense2_FOUND)
-    include_directories(${PROJECT_NAME}
-    ${realsense_INCLUDE_DIR}
-    )
-    target_link_libraries(${PROJECT_NAME}
-    ${realsense2_LIBRARY}
-    )
-endif()
+# # If RealSense SDK is found the library is added and its examples compiled
+# if(realsense2_FOUND)
+#     include_directories(${PROJECT_NAME}
+#     ${realsense_INCLUDE_DIR}
+#     )
+#     target_link_libraries(${PROJECT_NAME}
+#     ${realsense2_LIBRARY}
+#     )
+# endif()
 
 
 # Build examples

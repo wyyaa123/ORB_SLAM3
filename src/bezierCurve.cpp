@@ -148,7 +148,6 @@ void BezierCurve::sampleByArcLengthSpacing(int spacing, std::size_t lookupSegmen
         spacing = 1.0;
 
     const double length = approximateArcLength(lookupSegmentCount);
-    spdlog::debug("Approximated arc length: {:.5f}", length);
     const std::size_t segmentCount = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(length / spacing)));
     // sampleByArcLength(segmentCount, lookupSegmentCount, removeDuplicatePixels);
 
@@ -171,7 +170,6 @@ void BezierCurve::sampleByArcLengthSpacing(int spacing, std::size_t lookupSegmen
                              : ratio;
         appendSample(*this, evaluate(controlPoints, t), removeDuplicatePixels);
     }
-    spdlog::debug("Sampled {} points with spacing {:.5f}", sampledPoints.size(), spacing);
 }
 
 Eigen::Vector2f BezierCurve::derivative(double t) const

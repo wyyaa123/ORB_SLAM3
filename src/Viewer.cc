@@ -344,19 +344,17 @@ namespace ORB_SLAM3
             {
                 // cv::Mat imKfEdge = mpFrameDrawer->DrawKeyFrameEdges();
                 // if(!imKfEdge.empty()) cv::imshow("ORB-SLAM3: Reference KeyFrame Edges", imKfEdge);
-                // else spdlog::warn("No reference keyframe edges to display.");
 
                 cv::Mat imEdge = mpFrameDrawer->DrawFrameEdges();
                 if(!imEdge.empty()) cv::imshow("ORB-SLAM3: Current Frame Edges", imEdge);
-                else spdlog::warn("No current frame edges to display.");
+                else std::cerr << "No current frame edges to display." << std::endl;
 
                 // cv::Mat imSem = mpFrameDrawer->DrawFrameSemanticMask(trackedImageScale);
                 // if (!imSem.empty()) cv::imshow("ORB-SLAM3: Current Frame Semantic Mask", imSem);
-                // else spdlog::warn("No current frame semantic mask to display.");
 
                 cv::Mat imBezier = mpFrameDrawer->DrawFrameBeziers();
                 if(!imBezier.empty()) cv::imshow("ORB-SLAM3: Current Frame Beziers", imBezier);
-                else spdlog::warn("No current frame beziers to display.");
+                else std::cerr << "No current frame beziers to display." << std::endl;
             }
 
             cv::waitKey(mT);

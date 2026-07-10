@@ -27,9 +27,8 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <iosfwd>
 #include <string>
-#include <spdlog/spdlog.h>
-#include <spdlog/fmt/ostr.h>
 
 namespace ORB_SLAM3
 {

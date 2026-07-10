@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.8)
 project(DBoW2)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -29,7 +29,6 @@ set(SRCS_DUTILS
   DUtils/Timestamp.cpp)
 
 
-set(OpenCV_DIR /home/wyyaa123/ORB_SLAM3/Thirdparty/opencv4/lib/cmake/opencv4)
 find_package(OpenCV 4 QUIET)
 if(NOT OpenCV_FOUND)
    find_package(OpenCV 3.0 QUIET)
