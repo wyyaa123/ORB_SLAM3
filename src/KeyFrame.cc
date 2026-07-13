@@ -56,7 +56,7 @@ namespace ORB_SLAM3
                                                                        mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap), mbCurrentPlaceRecognition(false), mNameFile(F.mNameFile), mnMergeCorrectedForKF(0),
                                                                        mpCamera(F.mpCamera), mpCamera2(F.mpCamera2), mvLeftToRightMatch(F.mvLeftToRightMatch), mvRightToLeftMatch(F.mvRightToLeftMatch),
                                                                        mTlr(F.GetRelativePoseTlr()), mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0),
-                                                                       mbHasVelocity(false), mvEdges(F.mvEdges), mvBezierCurves(F.mvBezierCurves), mvpMapBeziers(F.mvpMapBeziers)
+                                                                       mbHasVelocity(false), mImgLeft(F.mImgLeft.clone()), mvEdges(F.mvEdges), mvBezierCurves(F.mvBezierCurves), mvpMapBeziers(F.mvpMapBeziers)
     {
         mnId = nNextId++;
 
@@ -383,12 +383,12 @@ namespace ORB_SLAM3
         map<KeyFrame *, int> KFcounter;
 
         vector<MapPoint *> vpMP;
-        vector<MapBezier *> vpMB;
+        // vector<MapBezier *> vpMB;
 
         {
             unique_lock<mutex> lockMPs(mMutexFeatures);
             vpMP = mvpMapPoints;
-            vpMB = mvpMapBeziers;
+            // vpMB = mvpMapBeziers;
         }
 
         // For all map points in keyframe check in which other keyframes are they seen
@@ -416,29 +416,29 @@ namespace ORB_SLAM3
         // Curve observations also contribute to the covisibility graph. Count
         // each shared MapBezier once to avoid overweighting duplicated matches
         // in the same keyframe.
-        set<MapBezier *> spCountedBeziers;
-        for (vector<MapBezier *>::iterator vit = vpMB.begin(), vend = vpMB.end(); vit != vend; vit++)
-        {
-            MapBezier *pMB = *vit;
+        // set<MapBezier *> spCountedBeziers;
+        // for (vector<MapBezier *>::iterator vit = vpMB.begin(), vend = vpMB.end(); vit != vend; vit++)
+        // {
+        //     MapBezier *pMB = *vit;
 
-            if (!pMB)
-                continue;
+        //     if (!pMB)
+        //         continue;
 
-            if (pMB->isBad() || pMB->GetMap() != mpMap)
-                continue;
+        //     if (pMB->isBad() || pMB->GetMap() != mpMap)
+        //         continue;
 
-            if (!spCountedBeziers.insert(pMB).second)
-                continue;
+        //     if (!spCountedBeziers.insert(pMB).second)
+        //         continue;
 
-            map<KeyFrame *, int> observations = pMB->GetObservations();
+        //     map<KeyFrame *, int> observations = pMB->GetObservations();
 
-            for (map<KeyFrame *, int>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
-            {
-                if (mit->first->mnId == mnId || mit->first->isBad() || mit->first->GetMap() != mpMap)
-                    continue;
-                KFcounter[mit->first]++;
-            }
-        }
+        //     for (map<KeyFrame *, int>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+        //     {
+        //         if (mit->first->mnId == mnId || mit->first->isBad() || mit->first->GetMap() != mpMap)
+        //             continue;
+        //         KFcounter[mit->first]++;
+        //     }
+        // }
 
         // This should not happen
         if (KFcounter.empty())

@@ -276,7 +276,7 @@ Eigen::Vector2f BezierCurve::closestPointOnCurve(const Eigen::Vector2f& p, int c
         {
             step *= 0.5;
             newT = std::max(0.0, std::min(1.0, t - step));
-            newD2 = evaluateBezier(controlPoints, newT).squaredNorm();
+            newD2 = (evaluateBezier(controlPoints, newT) - p).squaredNorm();
             ++lineSearchCount;
         }
 

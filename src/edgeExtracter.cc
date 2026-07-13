@@ -65,11 +65,11 @@ void edgeExtracter::preprocessSem(const cv::Mat &imSem)
             int width = stats.at<int>(j, cv::CC_STAT_WIDTH);
             int height = stats.at<int>(j, cv::CC_STAT_HEIGHT);
 
-            if (area < 100)
+            if (area < 200)
                 continue;
 
             double WHratio = std::max(width, height) / std::min(width, height);
-            if (WHratio > 10)
+            if (WHratio > 5)
                 continue;
 
             cv::Mat mask = cv::Mat::zeros(imSem.size(), CV_8UC1);

@@ -22,9 +22,7 @@
 #include "Optimizer.h"
 #include "Converter.h"
 #include "GeometricTools.h"
-#include "EdgeMatcher.h"
 
-#include <cmath>
 #include <mutex>
 #include <chrono>
 
@@ -89,7 +87,6 @@ namespace ORB_SLAM3
 
                 // Check recent MapPoints
                 MapPointCulling();
-                MapBezierCulling();
 #ifdef REGISTER_TIMES
                 std::chrono::steady_clock::time_point time_EndMPCulling = std::chrono::steady_clock::now();
 
@@ -99,7 +96,6 @@ namespace ORB_SLAM3
 
                 // Triangulate new MapPoints
                 CreateNewMapPoints();
-                CreateNewMapBeziers();
 
                 mbAbortBA = false;
 
@@ -332,25 +328,6 @@ namespace ORB_SLAM3
             }
         }
 
-        const vector<MapBezier *> vpMapBezierMatches = mpCurrentKeyFrame->GetMapBezierMatches();
-
-        for (int i = 0; i < vpMapBezierMatches.size(); i++)
-        {
-            MapBezier *pMB = vpMapBezierMatches[i];
-            if (pMB)
-            {
-                if (!pMB->isBad())
-                {
-                    if (!pMB->IsInKeyFrame(mpCurrentKeyFrame))
-                    {
-                        pMB->AddObservation(mpCurrentKeyFrame, i);
-                    }
-                    else
-                        mlpRecentAddedMapBeziers.push_back(pMB);
-                }
-            }
-        }
-
         // Update links in the Covisibility Graph
         mpCurrentKeyFrame->UpdateConnections();
 
@@ -397,41 +374,6 @@ namespace ORB_SLAM3
             }
             else if (((int)nCurrentKFid - (int)pMP->mnFirstKFid) >= 3)
                 lit = mlpRecentAddedMapPoints.erase(lit);
-            else
-            {
-                lit++;
-                borrar--;
-            }
-        }
-    }
-
-    void LocalMapping::MapBezierCulling()
-    {
-        list<MapBezier *>::iterator lit = mlpRecentAddedMapBeziers.begin();
-        const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
-
-        int cnThObs = 2;
-
-        int borrar = mlpRecentAddedMapBeziers.size();
-
-        while (lit != mlpRecentAddedMapBeziers.end())
-        {
-            MapBezier *pMB = *lit;
-
-            if (pMB->isBad())
-                lit = mlpRecentAddedMapBeziers.erase(lit);
-            else if (pMB->GetFoundRatio() < 0.25f)
-            {
-                pMB->SetBadFlag();
-                lit = mlpRecentAddedMapBeziers.erase(lit);
-            }
-            else if (((int)nCurrentKFid - (int)pMB->mnFirstKFid) >= 2 && pMB->Observations() <= cnThObs)
-            {
-                pMB->SetBadFlag();
-                lit = mlpRecentAddedMapBeziers.erase(lit);
-            }
-            else if (((int)nCurrentKFid - (int)pMB->mnFirstKFid) >= 3)
-                lit = mlpRecentAddedMapBeziers.erase(lit);
             else
             {
                 lit++;
@@ -770,110 +712,6 @@ namespace ORB_SLAM3
         }
     }
 
-    void LocalMapping::CreateNewMapBeziers()
-    {
-        if (!mpCurrentKeyFrame || mpCurrentKeyFrame->isBad())
-            return;
-
-        int nn = 10;
-
-        vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
-
-        if (mbInertial)
-        {
-            KeyFrame *pKF = mpCurrentKeyFrame;
-            int count = 0;
-            while ((vpNeighKFs.size() <= nn) && (pKF->mPrevKF) && (count++ < nn))
-            {
-                vector<KeyFrame *>::iterator it = std::find(vpNeighKFs.begin(), vpNeighKFs.end(), pKF->mPrevKF);
-                if (it == vpNeighKFs.end())
-                    vpNeighKFs.push_back(pKF->mPrevKF);
-                pKF = pKF->mPrevKF;
-            }
-        }
-
-        for (size_t i = 0; i < vpNeighKFs.size(); i++)
-        {
-            if (i > 0 && CheckNewKeyFrames())
-                return;
-
-            KeyFrame *pKF2 = vpNeighKFs[i];
-            if (!pKF2 || pKF2->isBad())
-                continue;
-
-            BezierMatcher matcher;
-            vector<MapBezier *> vpMatchedBeziers;
-            matcher.SearchByProjection(pKF2, mpCurrentKeyFrame, vpMatchedBeziers);
-
-            vector<MapBezier *> vpCurrentBeziers = mpCurrentKeyFrame->GetMapBezierMatches();
-            for (size_t j = 0; j < vpMatchedBeziers.size() && j < vpCurrentBeziers.size(); ++j)
-            {
-                MapBezier *pMB = vpMatchedBeziers[j];
-                if (!pMB || pMB->isBad() || vpCurrentBeziers[j])
-                    continue;
-
-                mpCurrentKeyFrame->AddMapBezier(pMB, j);
-                if (!pMB->IsInKeyFrame(mpCurrentKeyFrame))
-                    pMB->AddObservation(mpCurrentKeyFrame, static_cast<int>(j));
-            }
-        }
-
-        const vector<MapBezier *> vpCurrentBeziers = mpCurrentKeyFrame->GetMapBezierMatches();
-        const vector<BezierCurve> &vBezierCurves = mpCurrentKeyFrame->mvBezierCurves;
-        if (vpCurrentBeziers.size() != vBezierCurves.size())
-            return;
-
-        const Sophus::SE3f Twc = mpCurrentKeyFrame->GetPoseInverse();
-        const float minDepth = 0.2f;
-        const float maxDepth = 5.0f;
-        const int maxBezier = 200;
-        int nCreated = 0;
-
-        for (size_t i = 0; i < vBezierCurves.size(); ++i)
-        {
-            if (vpCurrentBeziers[i])
-                continue;
-
-            const BezierCurve &curve = vBezierCurves[i];
-            if (curve.sampledPoints.size() < 2 || curve.sampledPoints.size() != curve.depths.size())
-                continue;
-
-            vector<Eigen::Vector3f> vWorldPoints;
-            vWorldPoints.reserve(curve.sampledPoints.size());
-
-            bool validCurve = true;
-            for (size_t j = 0; j < curve.sampledPoints.size(); ++j)
-            {
-                const float depth = curve.depths[j];
-                if (!std::isfinite(depth) || depth <= minDepth || depth >= maxDepth)
-                {
-                    validCurve = false;
-                    break;
-                }
-
-                const Eigen::Vector2f &uv = curve.sampledPoints[j];
-                const Eigen::Vector3f pc(
-                    depth * mpCurrentKeyFrame->invfx * (uv.x() - mpCurrentKeyFrame->cx),
-                    depth * mpCurrentKeyFrame->invfy * (uv.y() - mpCurrentKeyFrame->cy),
-                    depth);
-                vWorldPoints.push_back(Twc * pc);
-            }
-
-            if (!validCurve || vWorldPoints.size() < 2)
-                continue;
-
-            MapBezier *pNewMB = new MapBezier(vWorldPoints, mpCurrentKeyFrame, mpAtlas->GetCurrentMap());
-            pNewMB->AddObservation(mpCurrentKeyFrame, static_cast<int>(i));
-            mpCurrentKeyFrame->AddMapBezier(pNewMB, i);
-            mpAtlas->AddMapBezier(pNewMB);
-            mlpRecentAddedMapBeziers.push_back(pNewMB);
-
-            ++nCreated;
-            if (nCreated >= maxBezier)
-                break;
-        }
-    }
-
     void LocalMapping::SearchInNeighbors()
     {
         // Retrieve neighbor keyframes
@@ -937,30 +775,18 @@ namespace ORB_SLAM3
                 matcher.Fuse(pKFi, vpMapPointMatches, true);
         }
 
-        BezierMatcher edgeMatcher;
-        vector<MapBezier *> vpMapBezierMatches = mpCurrentKeyFrame->GetMapBezierMatches();
-        for (vector<KeyFrame *>::iterator vit = vpTargetKFs.begin(), vend = vpTargetKFs.end(); vit != vend; vit++)
-        {
-            KeyFrame *pKFi = *vit;
-
-            edgeMatcher.Fuse(pKFi, vpMapBezierMatches);
-        }
-
         if (mbAbortBA)
             return;
 
         // Search matches by projection from target KFs in current KF
         vector<MapPoint *> vpFuseCandidates;
         vpFuseCandidates.reserve(vpTargetKFs.size() * vpMapPointMatches.size());
-        vector<MapBezier *> vpFuseBezierCandidates;
-        set<MapBezier *> spFuseBezierCandidates;
 
         for (vector<KeyFrame *>::iterator vitKF = vpTargetKFs.begin(), vendKF = vpTargetKFs.end(); vitKF != vendKF; vitKF++)
         {
             KeyFrame *pKFi = *vitKF;
 
             vector<MapPoint *> vpMapPointsKFi = pKFi->GetMapPointMatches();
-            vector<MapBezier *> vpMapBeziersKFi = pKFi->GetMapBezierMatches();
 
             for (vector<MapPoint *>::iterator vitMP = vpMapPointsKFi.begin(), vendMP = vpMapPointsKFi.end(); vitMP != vendMP; vitMP++)
             {
@@ -972,25 +798,11 @@ namespace ORB_SLAM3
                 pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
                 vpFuseCandidates.push_back(pMP);
             }
-
-            for (vector<MapBezier *>::iterator vitMB = vpMapBeziersKFi.begin(), vendMB = vpMapBeziersKFi.end(); vitMB != vendMB; vitMB++)
-            {
-                MapBezier *pMB = *vitMB;
-                if (!pMB)
-                    continue;
-                if (pMB->isBad() || pMB->GetMap() != mpCurrentKeyFrame->GetMap())
-                    continue;
-                if (!spFuseBezierCandidates.insert(pMB).second)
-                    continue;
-                vpFuseBezierCandidates.push_back(pMB);
-            }
         }
 
         matcher.Fuse(mpCurrentKeyFrame, vpFuseCandidates);
         if (mpCurrentKeyFrame->NLeft != -1)
             matcher.Fuse(mpCurrentKeyFrame, vpFuseCandidates, true);
-
-        edgeMatcher.Fuse(mpCurrentKeyFrame, vpFuseBezierCandidates);
 
         // Update points
         vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
@@ -1131,7 +943,6 @@ namespace ORB_SLAM3
             if ((pKF->mnId == pKF->GetMap()->GetInitKFid()) || pKF->isBad())
                 continue;
             const vector<MapPoint *> vpMapPoints = pKF->GetMapPointMatches();
-            const vector<MapBezier *> vpMapBeziers = pKF->GetMapBezierMatches();
 
             int nObs = 3;
             const int thObs = nObs;
@@ -1198,45 +1009,7 @@ namespace ORB_SLAM3
                 }
             }
 
-            set<MapBezier *> spCountedBeziers;
-            int nRedundantBezierObservations = 0;
-            int nMBs = 0;
-            for (vector<MapBezier *>::const_iterator vitMB = vpMapBeziers.begin(), vendMB = vpMapBeziers.end(); vitMB != vendMB; vitMB++)
-            {
-                MapBezier *pMB = *vitMB;
-                if (!pMB || pMB->isBad() || pMB->GetMap() != pKF->GetMap())
-                    continue;
-
-                if (!spCountedBeziers.insert(pMB).second)
-                    continue;
-
-                nMBs++;
-                if (pMB->Observations() <= thObs)
-                    continue;
-
-                const map<KeyFrame *, int> observations = pMB->GetObservations();
-                int nBezierObs = 0;
-                for (map<KeyFrame *, int>::const_iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
-                {
-                    KeyFrame *pKFi = mit->first;
-                    if (pKFi == pKF || pKFi->isBad() || pKFi->GetMap() != pKF->GetMap())
-                        continue;
-
-                    nBezierObs++;
-                    if (nBezierObs > thObs)
-                        break;
-                }
-
-                if (nBezierObs > thObs)
-                    nRedundantBezierObservations++;
-            }
-
-            const bool bHasPoints = nMPs > 0;
-            const bool bHasBeziers = nMBs > 0;
-            const bool bPointsRedundant = !bHasPoints || (nRedundantObservations > redundant_th * nMPs);
-            const bool bBeziersRedundant = !bHasBeziers || (nRedundantBezierObservations > redundant_th * nMBs);
-
-            if ((bHasPoints || bHasBeziers) && bPointsRedundant && bBeziersRedundant)
+            if (nRedundantObservations > redundant_th * nMPs)
             {
                 if (mbInertial)
                 {
@@ -1337,7 +1110,6 @@ namespace ORB_SLAM3
                 cout << "LM: Reseting Atlas in Local Mapping..." << endl;
                 mlNewKeyFrames.clear();
                 mlpRecentAddedMapPoints.clear();
-                mlpRecentAddedMapBeziers.clear();
                 mbResetRequested = false;
                 mbResetRequestedActiveMap = false;
 
@@ -1358,7 +1130,6 @@ namespace ORB_SLAM3
                 cout << "LM: Reseting current map in Local Mapping..." << endl;
                 mlNewKeyFrames.clear();
                 mlpRecentAddedMapPoints.clear();
-                mlpRecentAddedMapBeziers.clear();
 
                 // Inertial parameters
                 mTinit = 0.f;
@@ -1639,42 +1410,6 @@ namespace ORB_SLAM3
                 // Backproject using corrected camera
                 pMP->SetWorldPos(pRefKF->GetPoseInverse() * Xc);
             }
-        }
-
-        // Correct MapBeziers with the same reference-keyframe correction used
-        // for MapPoints. FullInertialBA currently optimizes points/keyframes;
-        // curve samples must be moved consistently with their observing KF.
-        const vector<MapBezier *> vpMBs = mpAtlas->GetCurrentMap()->GetAllMapBeziers();
-        for (size_t i = 0; i < vpMBs.size(); i++)
-        {
-            MapBezier *pMB = vpMBs[i];
-            if (!pMB || pMB->isBad())
-                continue;
-
-            const map<KeyFrame *, int> observations = pMB->GetObservations();
-            KeyFrame *pRefKF = nullptr;
-            for (map<KeyFrame *, int>::const_iterator mit = observations.begin(), mend = observations.end(); mit != mend; ++mit)
-            {
-                KeyFrame *pKFi = mit->first;
-                if (!pKFi || pKFi->isBad())
-                    continue;
-                if (pKFi->mnBAGlobalForKF == GBAid)
-                {
-                    pRefKF = pKFi;
-                    break;
-                }
-            }
-
-            if (!pRefKF)
-                continue;
-
-            vector<Eigen::Vector3f> vWorldPoints = pMB->GetWorldPoints();
-            for (size_t j = 0; j < vWorldPoints.size(); j++)
-            {
-                const Eigen::Vector3f Xc = pRefKF->mTcwBefGBA * vWorldPoints[j];
-                vWorldPoints[j] = pRefKF->GetPoseInverse() * Xc;
-            }
-            pMB->SetWorldPoints(vWorldPoints);
         }
 
         Verbose::PrintMess("Map updated!", Verbose::VERBOSITY_NORMAL);

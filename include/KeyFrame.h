@@ -394,6 +394,7 @@ namespace ORB_SLAM3
         const cv::Mat mDescriptors;
 
         // Edge
+        cv::Mat mImgLeft; // Retained for edge-match visualization.
         const std::vector<Edge> mvEdges;
         std::vector<BezierCurve> mvBezierCurves;
         // BoW

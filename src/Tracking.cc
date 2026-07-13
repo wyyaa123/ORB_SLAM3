@@ -1612,9 +1612,9 @@ namespace ORB_SLAM3
             imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
 
         if (mSensor == System::RGBD)
-            mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
+            mCurrentFrame = Frame(mImGray, imDepth, imSem, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
-            mCurrentFrame = Frame(mImGray, imDepth, imSem, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib, mEdgeSampleSize);
+            mCurrentFrame = Frame(mImGray, imDepth, imSem, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
@@ -2357,10 +2357,13 @@ namespace ORB_SLAM3
                         mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
                 }
 
-                for (int i = 0; i < mCurrentFrame.NB; i++)
+                if (mCurrentFrame.mbBezierOutliersValid)
                 {
-                    if (mCurrentFrame.mvpMapBeziers[i] && mCurrentFrame.mvbBezierOutlier[i])
-                        mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                    for (int i = 0; i < mCurrentFrame.NB; i++)
+                    {
+                        if (mCurrentFrame.mvpMapBeziers[i] && mCurrentFrame.mvbBezierOutlier[i])
+                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                    }
                 }
             }
 
@@ -2500,7 +2503,6 @@ namespace ORB_SLAM3
                     for (int k = 0; k < curve.sampledPoints.size(); k++)
                     {
                         Eigen::Vector3f pc;
-                        assert(curve.sampledPoints.size() == curve.depths.size());
                         float depth = curve.depths[k];
                         float x3d = depth * mCurrentFrame.invfx * (curve.sampledPoints[k][0] - mCurrentFrame.cx);
                         float y3d = depth * mCurrentFrame.invfy * (curve.sampledPoints[k][1] - mCurrentFrame.cy);
@@ -2913,24 +2915,29 @@ namespace ORB_SLAM3
                     pMP->mnLastFrameSeen = mCurrentFrame.mnId;
                     nmatches--;
                 }
-                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations())
                     nmatchesMap++;
             }
         }
 
-        for (int i = 0; i < mCurrentFrame.NB; i++)
+        if (mCurrentFrame.mbBezierOutliersValid)
         {
-            if (mCurrentFrame.mvpMapBeziers[i])
+            for (int i = 0; i < mCurrentFrame.NB; i++)
             {
-                if (mCurrentFrame.mvbBezierOutlier[i])
+                if (mCurrentFrame.mvpMapBeziers[i])
                 {
-                    MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
+                    if (mCurrentFrame.mvbBezierOutlier[i])
+                    {
+                        MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
 
-                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
-                    mCurrentFrame.mvbBezierOutlier[i] = false;
-                    pMB->mbTrackInView = false;
-                    pMB->mnLastFrameSeen = mCurrentFrame.mnId;
-                    nBezierMatches--;
+                        mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                        mCurrentFrame.mvbBezierOutlier[i] = false;
+                        pMB->mbTrackInView = false;
+                        pMB->mnLastFrameSeen = mCurrentFrame.mnId;
+                        nBezierMatches--;
+                    }
+                    else if (mCurrentFrame.mvpMapBeziers[i]->Observations())
+                        nmatchesMap++;
                 }
             }
         }
@@ -3022,6 +3029,7 @@ namespace ORB_SLAM3
     bool Tracking::TrackWithMotionModel()
     {
         ORBmatcher matcher(0.9, true);
+        BezierMatcher bezierMatcher;
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
@@ -3039,6 +3047,7 @@ namespace ORB_SLAM3
         }
 
         fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
+        fill(mCurrentFrame.mvpMapBeziers.begin(), mCurrentFrame.mvpMapBeziers.end(), static_cast<MapBezier *>(NULL));
 
         // Project points seen in previous frame
         int th;
@@ -3049,9 +3058,10 @@ namespace ORB_SLAM3
             th = 15;
 
         int nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
+        int nBezierMatches = bezierMatcher.SearchByProjection(mCurrentFrame, mLastFrame);
 
         // If few matches, uses a wider window search
-        if (nmatches < 20)
+        if (nmatches < 20 || nBezierMatches < 1)
         {
             Verbose::PrintMess("Not enough matches, wider window search!!", Verbose::VERBOSITY_NORMAL);
             fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
@@ -3060,7 +3070,7 @@ namespace ORB_SLAM3
             Verbose::PrintMess("Matches with wider search: " + to_string(nmatches), Verbose::VERBOSITY_NORMAL);
         }
 
-        if (nmatches < 20)
+        if (nmatches < 20 || nBezierMatches < 1)
         {
             Verbose::PrintMess("Not enough matches!!", Verbose::VERBOSITY_NORMAL);
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
@@ -3097,6 +3107,33 @@ namespace ORB_SLAM3
                 }
                 else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
                     nmatchesMap++;
+            }
+        }
+
+        // Bezier matches participate in pose optimization as independent curve
+        // observations. Remove rejected fragments after optimization, just as for
+        // point matches. The same MapBezier may legitimately remain in several
+        // current-frame slots when a long edge is split into short fragments.
+        if (mCurrentFrame.mbBezierOutliersValid)
+        {
+            for (int i = 0; i < mCurrentFrame.NB; ++i)
+            {
+                MapBezier *pMapBezier = mCurrentFrame.mvpMapBeziers[i];
+                if (!pMapBezier)
+                    continue;
+
+                if (mCurrentFrame.mvbBezierOutlier[i])
+                {
+                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                    mCurrentFrame.mvbBezierOutlier[i] = false;
+                    pMapBezier->mbTrackInView = false;
+                    pMapBezier->mnLastFrameSeen = mCurrentFrame.mnId;
+                    --nBezierMatches;
+                }
+                else if (pMapBezier->Observations() > 0)
+                {
+                    ++nmatchesMap;
+                }
             }
         }
 
@@ -3174,20 +3211,23 @@ namespace ORB_SLAM3
             }
         }
 
-        for (int i = 0; i < mCurrentFrame.NB; i++)
+        if (mCurrentFrame.mbBezierOutliersValid)
         {
-            if (mCurrentFrame.mvpMapBeziers[i])
+            for (int i = 0; i < mCurrentFrame.NB; i++)
             {
-                if (!mCurrentFrame.mvbBezierOutlier[i])
+                if (mCurrentFrame.mvpMapBeziers[i])
                 {
-                    mCurrentFrame.mvpMapBeziers[i]->IncreaseFound();
-                    if (!mbOnlyTracking)
+                    if (!mCurrentFrame.mvbBezierOutlier[i])
                     {
-                        if (mCurrentFrame.mvpMapBeziers[i]->Observations() > 0)
-                            mnMatchesInliers += mCurrentFrame.mvpMapBeziers[i]->NP;
+                        mCurrentFrame.mvpMapBeziers[i]->IncreaseFound();
+                        if (!mbOnlyTracking)
+                        {
+                            if (mCurrentFrame.mvpMapBeziers[i]->Observations() > 0)
+                                mnMatchesInliers++;
+                        }
+                        else
+                            mnMatchesInliers++;
                     }
-                    else
-                        mnMatchesInliers += mCurrentFrame.mvpMapBeziers[i]->NP;
                 }
             }
         }

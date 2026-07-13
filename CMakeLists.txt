@@ -95,6 +95,7 @@ src/bezierCurve.cpp
 src/edgeExtracter.cc
 src/MapBezier.cc
 src/EdgeMatcher.cc
+src/Hungarian.cpp
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -131,7 +132,8 @@ include/patch.h
 include/bezierCurve.h
 include/edgeExtracter.h
 include/MapBezier.h
-include/EdgeMatcher.h)
+include/EdgeMatcher.h
+include/Hungarian.h)
 
 add_subdirectory(Thirdparty/g2o)
 
@@ -160,11 +162,15 @@ TBB::tbb
 # Build examples
 
 # RGB-D examples
-# set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D)
 
-# add_executable(rgbd_tum
-#         Examples/RGB-D/rgbd_tum.cc)
-# target_link_libraries(rgbd_tum ${PROJECT_NAME})
+add_executable(rgbd_tum
+        Examples/RGB-D/rgbd_tum.cc)
+target_link_libraries(rgbd_tum ${PROJECT_NAME})
+
+add_executable(exp
+        Examples/RGB-D/exp.cc)
+target_link_libraries(exp ${PROJECT_NAME})
 
 # if(realsense2_FOUND)
 #     add_executable(rgbd_realsense_D435i
@@ -174,11 +180,11 @@ TBB::tbb
 
 
 # RGB-D inertial examples
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)
+# set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)
 
-add_executable(rgbds_inertial
-        Examples/RGB-D-Inertial/rgbds_inertial.cc)
-target_link_libraries(rgbds_inertial ${PROJECT_NAME})
+# add_executable(rgbds_inertial
+#         Examples/RGB-D-Inertial/rgbds_inertial.cc)
+# target_link_libraries(rgbds_inertial ${PROJECT_NAME})
 
 # if(realsense2_FOUND)
 #     add_executable(rgbd_inertial_realsense_D435i
