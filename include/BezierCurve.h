@@ -3,7 +3,7 @@
 
 #include <cfloat>
 #include <vector>
-#include "edge.h"
+#include "Edge.h"
 #include <Eigen/Core>
 
 Eigen::Vector2f evaluateBezier(const std::vector<Eigen::Vector2f> &points, double t);

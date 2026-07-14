@@ -20,7 +20,7 @@
 #define KEYFRAME_H
 
 #include "MapPoint.h"
-#include "MapBezier.h"
+#include "MapCurve.h"
 #include "DBoW2/BowVector.h"
 #include "DBoW2/FeatureVector.h"
 #include "ORBVocabulary.h"
@@ -261,15 +261,15 @@ namespace ORB_SLAM3
         bool UnprojectStereo(int i, Eigen::Vector3f &x3D);
 
         // MapBezier observation functions
-        void AddMapBezier(MapBezier *pMB, const size_t &idx);
-        void EraseMapBezierMatch(const int &idx);
-        void EraseMapBezierMatch(MapBezier *pMB);
-        void ReplaceMapBezierMatch(const int &idx, MapBezier *pMB);
-        void ReplaceMapBezierMatch(MapBezier *pOldMB, MapBezier *pNewMB);
-        std::set<MapBezier *> GetMapBeziers();
-        std::vector<MapBezier *> GetMapBezierMatches();
-        int TrackedMapBeziers(const int &minObs);
-        MapBezier *GetMapBezier(size_t idx);
+        void AddMapCurve(MapCurve *pMB, const size_t &idx);
+        void EraseMapCurveMatch(const int &idx);
+        void EraseMapCurveMatch(MapCurve *pMB);
+        void ReplaceMapCurveMatch(const int &idx, MapCurve *pMB);
+        void ReplaceMapCurveMatch(MapCurve *pOldMB, MapCurve *pNewMB);
+        std::set<MapCurve *> GetMapCurves();
+        std::vector<MapCurve *> GetMapCurveMatches();
+        int TrackedMapCurves(const int &minObs);
+        MapCurve *GetMapCurve(size_t idx);
 
         // Image
         bool IsInImage(const float &x, const float &y) const;
@@ -464,7 +464,7 @@ namespace ORB_SLAM3
         std::vector<long long int> mvBackupMapPointsId;
 
         // MapEdge
-        std::vector<MapBezier *> mvpMapBeziers;
+        std::vector<MapCurve *> mvpMapCurves;
 
         // BoW
         KeyFrameDatabase *mpKeyFrameDB;

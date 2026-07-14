@@ -25,6 +25,7 @@
 
 #include <mutex>
 #include <chrono>
+#include <unordered_set>
 
 namespace ORB_SLAM3
 {
@@ -326,6 +327,24 @@ namespace ORB_SLAM3
                     }
                 }
             }
+        }
+
+        // Associate MapCurves to the new keyframe. The same map curve may be
+        // stored in several keyframe slots when a long curve is split into
+        // multiple 2D fragments, but it represents one keyframe observation.
+        const vector<MapCurve *> vpMapCurveMatches = mpCurrentKeyFrame->GetMapCurveMatches();
+        std::unordered_set<MapCurve *> processedMapCurves;
+        for (size_t i = 0; i < vpMapCurveMatches.size(); ++i)
+        {
+            MapCurve *pMapCurve = vpMapCurveMatches[i];
+            if (!pMapCurve || pMapCurve->isBad() ||
+                !processedMapCurves.insert(pMapCurve).second)
+            {
+                continue;
+            }
+
+            if (!pMapCurve->IsInKeyFrame(mpCurrentKeyFrame))
+                pMapCurve->AddObservation(mpCurrentKeyFrame, static_cast<int>(i));
         }
 
         // Update links in the Covisibility Graph

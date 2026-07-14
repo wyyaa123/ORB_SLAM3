@@ -83,16 +83,16 @@ namespace ORB_SLAM3
         mspMapPoints.insert(pMP);
     }
 
-    void Map::AddMapBezier(MapBezier *pMB)
+    void Map::AddMapCurve(MapCurve *pMB)
     {
         unique_lock<mutex> lock(mMutexMap);
-        mspMapBeziers.insert(pMB);
+        mspMapCurves.insert(pMB);
     }
 
-    void Map::EraseMapBezier(MapBezier *pMB)
+    void Map::EraseMapCurve(MapCurve *pMB)
     {
         unique_lock<mutex> lock(mMutexMap);
-        mspMapBeziers.erase(pMB);
+        mspMapCurves.erase(pMB);
     }
 
     void Map::SetImuInitialized()
@@ -186,22 +186,22 @@ namespace ORB_SLAM3
         return mvpReferenceMapPoints;
     }
 
-    void Map::SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs)
+    void Map::SetReferenceMapCurves(const std::vector<MapCurve *> &vpMBs)
     {
         unique_lock<mutex> lock(mMutexMap);
-        mvpReferenceMapBeziers = vpMBs;
+        mvpReferenceMapCurves = vpMBs;
     }
 
-    vector<MapBezier *> Map::GetReferenceMapBeziers()
+    vector<MapCurve *> Map::GetReferenceMapCurves()
     {
         unique_lock<mutex> lock(mMutexMap);
-        return mvpReferenceMapBeziers;
+        return mvpReferenceMapCurves;
     }
 
-    std::vector<MapBezier *> Map::GetAllMapBeziers()
+    std::vector<MapCurve *> Map::GetAllMapCurves()
     {
         unique_lock<mutex> lock(mMutexMap);
-        return std::vector<MapBezier *>(mspMapBeziers.begin(), mspMapBeziers.end());
+        return std::vector<MapCurve *>(mspMapCurves.begin(), mspMapCurves.end());
     }
 
     long unsigned int Map::GetId()
@@ -255,7 +255,7 @@ namespace ORB_SLAM3
 
         mspMapPoints.clear();
         mspKeyFrames.clear();
-        mspMapBeziers.clear();
+        mspMapCurves.clear();
         mnMaxKFid = mnInitKFid;
         mbImuInitialized = false;
         mvpReferenceMapPoints.clear();
@@ -308,9 +308,9 @@ namespace ORB_SLAM3
             pMP->SetWorldPos(s * Ryw * pMP->GetWorldPos() + tyw);
             pMP->UpdateNormalAndDepth();
         }
-        for (set<MapBezier *>::iterator sit = mspMapBeziers.begin(); sit != mspMapBeziers.end(); sit++)
+        for (set<MapCurve *>::iterator sit = mspMapCurves.begin(); sit != mspMapCurves.end(); sit++)
         {
-            MapBezier *pMB = *sit;
+            MapCurve *pMB = *sit;
             std::vector<Eigen::Vector3f> vWorldPoints = pMB->GetWorldPoints();
             for (size_t i = 0; i < vWorldPoints.size(); i++)
             {

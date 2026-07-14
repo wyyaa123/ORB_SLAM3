@@ -60,6 +60,35 @@ namespace ORB_SLAM3
         GeometricCamera *pCamera;
     };
 
+    class EdgeSE3ProjectCurveOnlyPose : public g2o::BaseUnaryEdge<2, Eigen::Vector2d, g2o::VertexSE3Expmap>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeSE3ProjectCurveOnlyPose() : observedCurvature(0.0), curvatureScale(1.0), pCamera(nullptr) {}
+
+        bool read(std::istream &is) { return false; }
+
+        bool write(std::ostream &os) const { return false; }
+
+        void computeError();
+
+        bool isDepthPositive();
+
+        virtual void linearizeOplus();
+
+        Eigen::Vector3d XwPrevious;
+        Eigen::Vector3d Xw;
+        Eigen::Vector3d XwNext;
+        Eigen::Vector2d normal;
+        double observedCurvature;
+        double curvatureScale;
+        GeometricCamera *pCamera;
+
+    private:
+        double projectedCurvature(const g2o::SE3Quat &Tcw) const;
+    };
+
     class EdgeSE3ProjectXYZOnlyPoseToBody : public g2o::BaseUnaryEdge<2, Eigen::Vector2d, g2o::VertexSE3Expmap>
     {
     public:
@@ -90,55 +119,6 @@ namespace ORB_SLAM3
         GeometricCamera *pCamera;
 
         g2o::SE3Quat mTrl;
-    };
-
-    class EdgeSE3ProjectBezierPointOnlyPose : public g2o::BaseUnaryEdge<1, Eigen::Vector2d, g2o::VertexSE3Expmap>
-    {
-    public:
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-        EdgeSE3ProjectBezierPointOnlyPose();
-
-        bool read(std::istream &is) override;
-
-        bool write(std::ostream &os) const override;
-
-        void computeError() override;
-
-        bool isDepthPositive() const;
-
-        void linearizeOplus() override;
-
-        // Fixed world point sampled from the 3-D map curve.
-        Eigen::Vector3d Xw;
-
-        // Image-space normal of the matched 2-D curve at _measurement.
-        // computeError() and linearizeOplus() normalize it before use.
-        Eigen::Vector2d normal;
-
-        // The camera model is owned by Frame/KeyFrame and must outlive this edge.
-        GeometricCamera *pCamera;
-    };
-
-    class EdgeSE3ProjectBezierPoint : public g2o::BaseBinaryEdge<1, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>
-    {
-    public:
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-        EdgeSE3ProjectBezierPoint();
-
-        bool read(std::istream &is) override;
-
-        bool write(std::ostream &os) const override;
-
-        void computeError() override;
-
-        bool isDepthPositive() const;
-
-        void linearizeOplus() override;
-
-        Eigen::Vector2d normal;
-        GeometricCamera *pCamera;
     };
 
     class EdgeSE3ProjectXYZ : public g2o::BaseBinaryEdge<2, Eigen::Vector2d, g2o::VertexSBAPointXYZ, g2o::VertexSE3Expmap>

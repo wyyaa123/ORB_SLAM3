@@ -131,10 +131,8 @@ namespace ORB_SLAM3
         bool CheckNewKeyFrames();
         void ProcessNewKeyFrame();
         void CreateNewMapPoints();
-        void CreateNewMapBeziers();
 
         void MapPointCulling();
-        void MapBezierCulling();
         void SearchInNeighbors();
         void KeyFrameCulling();
 
@@ -165,7 +163,6 @@ namespace ORB_SLAM3
         KeyFrame *mpCurrentKeyFrame;
 
         std::list<MapPoint *> mlpRecentAddedMapPoints;
-        std::list<MapBezier *> mlpRecentAddedMapBeziers;
 
         std::mutex mMutexNewKFs;
 

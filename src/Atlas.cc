@@ -114,10 +114,10 @@ namespace ORB_SLAM3
         pMapMP->AddMapPoint(pMP);
     }
 
-    void Atlas::AddMapBezier(MapBezier *pMB)
+    void Atlas::AddMapCurve(MapCurve *pMB)
     {
         Map *pMapMB = pMB->GetMap();
-        pMapMB->AddMapBezier(pMB);
+        pMapMB->AddMapCurve(pMB);
     }
 
     GeometricCamera *Atlas::AddCamera(GeometricCamera *pCam)
@@ -175,10 +175,10 @@ namespace ORB_SLAM3
         mpCurrentMap->SetReferenceMapPoints(vpMPs);
     }
 
-    void Atlas::SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs)
+    void Atlas::SetReferenceMapCurves(const std::vector<MapCurve *> &vpMBs)
     {
         unique_lock<mutex> lock(mMutexAtlas);
-        mpCurrentMap->SetReferenceMapBeziers(vpMBs);
+        mpCurrentMap->SetReferenceMapCurves(vpMBs);
     }
 
     void Atlas::InformNewBigChange()
@@ -223,16 +223,16 @@ namespace ORB_SLAM3
         return mpCurrentMap->GetReferenceMapPoints();
     }
 
-    std::vector<MapBezier *> Atlas::GetAllMapBeziers()
+    std::vector<MapCurve *> Atlas::GetAllMapCurves()
     {
         unique_lock<mutex> lock(mMutexAtlas);
-        return mpCurrentMap->GetAllMapBeziers();
+        return mpCurrentMap->GetAllMapCurves();
     }
 
-    std::vector<MapBezier *> Atlas::GetReferenceMapBeziers()
+    std::vector<MapCurve *> Atlas::GetReferenceMapCurves()
     {
         unique_lock<mutex> lock(mMutexAtlas);
-        return mpCurrentMap->GetReferenceMapBeziers();
+        return mpCurrentMap->GetReferenceMapCurves();
     }
 
     vector<Map *> Atlas::GetAllMaps()

@@ -19,6 +19,9 @@
 #include "G2oTypes.h"
 #include "ImuTypes.h"
 #include "Converter.h"
+
+#include <cmath>
+
 namespace ORB_SLAM3
 {
 
@@ -398,6 +401,97 @@ namespace ORB_SLAM3
             -z, 0.0, x, 0.0, 1.0, 0.0,
             y, -x, 0.0, 0.0, 0.0, 1.0;
         _jacobianOplusXi = proj_jac * Rcb * SE3deriv; // symbol different becasue of update mode
+    }
+
+    double EdgeCurveOnlyPose::projectedCurvature(const ImuCamPose &pose) const
+    {
+        const Eigen::Vector2d previous = pose.Project(XwPrevious, cam_idx);
+        const Eigen::Vector2d current = pose.Project(Xw, cam_idx);
+        const Eigen::Vector2d next = pose.Project(XwNext, cam_idx);
+
+        const Eigen::Vector2d first = current - previous;
+        const Eigen::Vector2d second = next - current;
+        const Eigen::Vector2d chord = next - previous;
+        const double denominator = first.norm() * second.norm() * chord.norm();
+
+        if (denominator <= 1e-12)
+            return 0.0;
+
+        const double cross = first.x() * second.y() - first.y() * second.x();
+        return 2.0 * std::fabs(cross) / denominator;
+    }
+
+    Eigen::Vector2d EdgeCurveOnlyPose::curveError(const ImuCamPose &pose) const
+    {
+        Eigen::Vector2d error;
+        if (!pose.isDepthPositive(XwPrevious, cam_idx) ||
+            !pose.isDepthPositive(Xw, cam_idx) ||
+            !pose.isDepthPositive(XwNext, cam_idx))
+        {
+            error.setConstant(1e3);
+            return error;
+        }
+
+        const double normalNorm = normal.norm();
+        if (normalNorm <= 1e-12)
+        {
+            error.setZero();
+            return error;
+        }
+
+        const Eigen::Vector2d projected = pose.Project(Xw, cam_idx);
+        const double curvature = projectedCurvature(pose);
+        if (!projected.allFinite() || !std::isfinite(curvature))
+        {
+            error.setConstant(1e3);
+            return error;
+        }
+
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+        error[0] = unitNormal.dot(projected - _measurement);
+        error[1] = curvatureScale * (curvature - observedCurvature);
+        return error;
+    }
+
+    void EdgeCurveOnlyPose::computeError()
+    {
+        const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
+        _error = curveError(VPose->estimate());
+    }
+
+    bool EdgeCurveOnlyPose::isDepthPositive()
+    {
+        const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
+        return VPose->estimate().isDepthPositive(XwPrevious, cam_idx) &&
+               VPose->estimate().isDepthPositive(Xw, cam_idx) &&
+               VPose->estimate().isDepthPositive(XwNext, cam_idx);
+    }
+
+    void EdgeCurveOnlyPose::linearizeOplus()
+    {
+        const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
+        if (!isDepthPositive())
+        {
+            _jacobianOplusXi.setZero();
+            return;
+        }
+
+        constexpr double delta = 1e-6;
+        const ImuCamPose estimate = VPose->estimate();
+        for (int i = 0; i < 6; ++i)
+        {
+            Eigen::Matrix<double, 6, 1> update = Eigen::Matrix<double, 6, 1>::Zero();
+            update[i] = delta;
+            ImuCamPose positive = estimate;
+            positive.Update(update.data());
+
+            update[i] = -delta;
+            ImuCamPose negative = estimate;
+            negative.Update(update.data());
+
+            _jacobianOplusXi.col(i) =
+                (curveError(positive) - curveError(negative)) / (2.0 * delta);
+        }
     }
 
     void EdgeStereo::linearizeOplus()
@@ -852,68 +946,6 @@ namespace ORB_SLAM3
         Eigen::Matrix3d W;
         W << 0.0, -w[2], w[1], w[2], 0.0, -w[0], -w[1], w[0], 0.0;
         return W;
-    }
-
-    void EdgeBezierOnlyPose::linearizeOplus()
-    {
-        const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[0]);
-
-        const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
-        const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
-        const Eigen::Vector3d Xc = Rcw * Xw + tcw;
-        const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx] * Xc + VPose->estimate().tbc[cam_idx];
-        const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
-
-        Eigen::Matrix<double, 2, 3> proj_jac = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
-
-        Eigen::Matrix<double, 3, 6> SE3deriv;
-        const double x = Xb(0), y = Xb(1), z = Xb(2);
-        SE3deriv << 0.0, z, -y, 1.0, 0.0, 0.0,
-            -z, 0.0, x, 0.0, 1.0, 0.0,
-            y, -x, 0.0, 0.0, 0.0, 1.0;
-
-        const double n = normal.norm();
-        if (n <= 1e-12)
-        {
-            _jacobianOplusXi.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d unitNormal = normal / n;
-        _jacobianOplusXi = unitNormal.transpose() * proj_jac * Rcb * SE3deriv;
-    }
-
-    void EdgeBezier::linearizeOplus()
-    {
-        const g2o::VertexSBAPointXYZ *VPoint = static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
-        const VertexPose *VPose = static_cast<const VertexPose *>(_vertices[1]);
-
-        const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
-        const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
-        const Eigen::Vector3d Xc = Rcw * VPoint->estimate() + tcw;
-        const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx] * Xc + VPose->estimate().tbc[cam_idx];
-        const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
-
-        const double n = normal.norm();
-        if (n <= 1e-12)
-        {
-            _jacobianOplusXi.setZero();
-            _jacobianOplusXj.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d unitNormal = normal / n;
-        const Eigen::Matrix<double, 2, 3> proj_jac = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
-
-        _jacobianOplusXi = -unitNormal.transpose() * proj_jac * Rcw;
-
-        Eigen::Matrix<double, 3, 6> SE3deriv;
-        const double x = Xb(0), y = Xb(1), z = Xb(2);
-        SE3deriv << 0.0, z, -y, 1.0, 0.0, 0.0,
-            -z, 0.0, x, 0.0, 1.0, 0.0,
-            y, -x, 0.0, 0.0, 0.0, 1.0;
-
-        _jacobianOplusXj = unitNormal.transpose() * proj_jac * Rcb * SE3deriv;
     }
 
 }

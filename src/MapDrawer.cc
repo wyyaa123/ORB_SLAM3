@@ -181,7 +181,7 @@ namespace ORB_SLAM3
         if (!pActiveMap)
             return;
 
-        const vector<MapBezier *> vBeziers = pActiveMap->GetAllMapBeziers();
+        const vector<MapCurve *> vCurves = pActiveMap->GetAllMapCurves();
         static constexpr float edgeColors[][3] = {
             {0.00f, 0.60f, 1.00f},
             {1.00f, 0.30f, 0.20f},
@@ -196,7 +196,7 @@ namespace ORB_SLAM3
 
         glPointSize(mPointSize);
 
-        for (MapBezier *pMB : vBeziers)
+        for (MapCurve *pMB : vCurves)
         {
             if (!pMB || pMB->isBad())
                 continue;

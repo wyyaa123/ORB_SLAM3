@@ -38,7 +38,7 @@
 #include "Eigen/Core"
 #include "sophus/se3.hpp"
 
-#include "edgeExtracter.h"
+#include "EdgeExtracter.h"
 
 namespace ORB_SLAM3
 {
@@ -46,7 +46,7 @@ namespace ORB_SLAM3
 #define FRAME_GRID_COLS 64
 
     class MapPoint;
-    class MapBezier;
+    class MapCurve;
     class KeyFrame;
     class ConstraintPoseImu;
     class GeometricCamera;
@@ -110,7 +110,7 @@ namespace ORB_SLAM3
         // and fill variables of the MapPoint to be used by the tracking
         bool isInFrustum(MapPoint *pMP, float viewingCosLimit);
 
-        bool isInFrustum(MapBezier *pMB);
+        bool isInFrustum(MapCurve *pMB);
 
         bool ProjectPointDistort(MapPoint *pMP, cv::Point2f &kp, float &u, float &v);
 
@@ -258,7 +258,7 @@ namespace ORB_SLAM3
         // Number of KeyPoints.
         int N;
         // Number of sampled points for bezier curve.
-        int NB = 0;
+        int NC = 0;
         // Curve-level outlier state produced by pose-only optimization.
         std::vector<bool> mvbBezierOutlier;
         int mnBezierInlierCurves = 0;
@@ -272,7 +272,7 @@ namespace ORB_SLAM3
 
         // Corresponding stereo coordinate and depth for each keypoint.
         std::vector<MapPoint *> mvpMapPoints;
-        std::vector<MapBezier *> mvpMapBeziers;
+        std::vector<MapCurve *> mvpMapBeziers;
         // "Monocular" keypoints have a negative value.
         std::vector<float> mvuRight;
         std::vector<float> mvDepth;
@@ -408,18 +408,11 @@ namespace ORB_SLAM3
 
         Eigen::Vector3f UnprojectStereoFishEye(const int &i);
 
-        void sampleBezierCurves();
-
-        bool isPointsAssociated(const orderedEdgePoint &pt1, const orderedEdgePoint &pt2);
-        void searchRadius(float x, float y, double radius, std::vector<orderedEdgePoint> &result);
-        std::vector<int> edgeWiseCorrespondenceReproject(Edge &query_edge, const Sophus::SE3f &T2curr);
+        void sampleBezierCurves(const std::vector<Edge> &vEdges);
 
         cv::Mat mImgLeft, mImgRight;
         cv::Mat mImgDepth, mImgSem;
 
-        std::map<int, int> mmIndexMap;
-        cv::Mat mMatSearch;
-        std::vector<Edge> mvEdges;
         std::vector<BezierCurve> mvBezierCurves; // List of Bezier curves fitted to edges
 
         void PrintPointDistribution()

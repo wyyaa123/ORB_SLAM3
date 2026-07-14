@@ -1,5 +1,5 @@
-#ifndef MAPBEZIER_H
-#define MAPBEZIER_H
+#ifndef MAPCURVES_H
+#define MAPCURVES_H
 
 #include "KeyFrame.h"
 #include "Frame.h"
@@ -12,14 +12,18 @@ namespace ORB_SLAM3
     class Map;
     class Frame;
 
-    class MapBezier
+    class MapCurve
     {
     public:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-        MapBezier(const std::vector<Eigen::Vector3f> &vWorldPoints,
+        MapCurve(const std::vector<Eigen::Vector3f> &vWorldPoints,
                   KeyFrame *pRefKF,
                   Map *pMap);
+
+        MapCurve(const std::vector<Eigen::Vector3f> &vWorldPoints,
+                 Map *pMap,
+                 Frame *pFrame);
 
         void AddObservation(KeyFrame *pKF, int idx);
         void EraseObservation(KeyFrame *pKF);
@@ -36,8 +40,8 @@ namespace ORB_SLAM3
         bool isBad();
         void SetBadFlag();
 
-        void Replace(MapBezier *pMB);
-        MapBezier *GetReplaced();
+        void Replace(MapCurve *pMB);
+        MapCurve *GetReplaced();
 
         void IncreaseVisible(int n = 1);
         void IncreaseFound(int n = 1);
@@ -63,7 +67,7 @@ namespace ORB_SLAM3
 
         long unsigned int mnBALocalForMerge;
 
-        int NP;
+        int NC;
     protected:
         std::vector<Eigen::Vector3f> mvWorldPoints;
         std::map<KeyFrame *, int> mObservations;
@@ -73,7 +77,7 @@ namespace ORB_SLAM3
         Map *mpMap;
 
         bool mbBad;
-        MapBezier *mpReplaced;
+        MapCurve *mpReplaced;
 
         // Tracking counters
         int mnVisible;
@@ -87,4 +91,4 @@ namespace ORB_SLAM3
     };
 }
 
-#endif // MAPBEZIER_H
+#endif // MAPCURVE_H

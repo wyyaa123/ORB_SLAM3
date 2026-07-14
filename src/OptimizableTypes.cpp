@@ -19,6 +19,7 @@
 #include "OptimizableTypes.h"
 
 #include <cassert>
+#include <cmath>
 
 namespace ORB_SLAM3
 {
@@ -69,6 +70,114 @@ namespace ORB_SLAM3
             y, -x, 0.f, 0.f, 0.f, 1.f;
 
         _jacobianOplusXi = -pCamera->projectJac(xyz_trans) * SE3deriv;
+    }
+
+    double EdgeSE3ProjectCurveOnlyPose::projectedCurvature(const g2o::SE3Quat &Tcw) const
+    {
+        const Eigen::Vector2d previous = pCamera->project(Tcw.map(XwPrevious));
+        const Eigen::Vector2d current = pCamera->project(Tcw.map(Xw));
+        const Eigen::Vector2d next = pCamera->project(Tcw.map(XwNext));
+
+        const Eigen::Vector2d first = current - previous;
+        const Eigen::Vector2d second = next - current;
+        const Eigen::Vector2d chord = next - previous;
+        const double denominator = first.norm() * second.norm() * chord.norm();
+
+        if (denominator <= 1e-12)
+            return 0.0;
+
+        const double cross = first.x() * second.y() - first.y() * second.x();
+        return 2.0 * std::fabs(cross) / denominator;
+    }
+
+    void EdgeSE3ProjectCurveOnlyPose::computeError()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(pCamera != nullptr);
+
+        const g2o::VertexSE3Expmap *vSE3 = static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
+        const g2o::SE3Quat &Tcw = vSE3->estimate();
+        const Eigen::Vector3d previousCameraPoint = Tcw.map(XwPrevious);
+        const Eigen::Vector3d cameraPoint = Tcw.map(Xw);
+        const Eigen::Vector3d nextCameraPoint = Tcw.map(XwNext);
+        if (previousCameraPoint.z() <= 1e-6 || cameraPoint.z() <= 1e-6 || nextCameraPoint.z() <= 1e-6)
+        {
+            _error.setConstant(1e3);
+            return;
+        }
+
+        const Eigen::Vector2d projected = pCamera->project(cameraPoint);
+
+        const double normalNorm = normal.norm();
+        if (normalNorm <= 1e-12)
+        {
+            _error.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+        // Normal-position residual and curvature-consistency residual.
+        _error[0] = unitNormal.dot(projected - _measurement);
+        _error[1] = curvatureScale * (projectedCurvature(Tcw) - observedCurvature);
+    }
+
+    bool EdgeSE3ProjectCurveOnlyPose::isDepthPositive()
+    {
+        const g2o::VertexSE3Expmap *vSE3 = static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
+        const g2o::SE3Quat &Tcw = vSE3->estimate();
+        return Tcw.map(XwPrevious).z() > 0.0 &&
+               Tcw.map(Xw).z() > 0.0 &&
+               Tcw.map(XwNext).z() > 0.0;
+    }
+
+    void EdgeSE3ProjectCurveOnlyPose::linearizeOplus()
+    {
+        assert(_vertices[0] != nullptr);
+        assert(pCamera != nullptr);
+
+        g2o::VertexSE3Expmap *vSE3 = static_cast<g2o::VertexSE3Expmap *>(_vertices[0]);
+        const g2o::SE3Quat Tcw = vSE3->estimate();
+        const Eigen::Vector3d cameraPoint = Tcw.map(Xw);
+
+        if (!isDepthPositive())
+        {
+            _jacobianOplusXi.setZero();
+            return;
+        }
+
+        const double x = cameraPoint.x();
+        const double y = cameraPoint.y();
+        const double z = cameraPoint.z();
+
+        Eigen::Matrix<double, 3, 6> SE3deriv;
+        SE3deriv << 0.0, z, -y, 1.0, 0.0, 0.0,
+            -z, 0.0, x, 0.0, 1.0, 0.0,
+            y, -x, 0.0, 0.0, 0.0, 1.0;
+
+        const double normalNorm = normal.norm();
+        if (normalNorm <= 1e-12)
+        {
+            _jacobianOplusXi.setZero();
+            return;
+        }
+
+        const Eigen::Vector2d unitNormal = normal / normalNorm;
+        _jacobianOplusXi.row(0) = unitNormal.transpose() * pCamera->projectJac(cameraPoint) * SE3deriv;
+
+        constexpr double delta = 1e-6;
+        for (int i = 0; i < 6; ++i)
+        {
+            Eigen::Matrix<double, 6, 1> update = Eigen::Matrix<double, 6, 1>::Zero();
+            update[i] = delta;
+            const g2o::SE3Quat positive = g2o::SE3Quat::exp(update) * Tcw;
+
+            update[i] = -delta;
+            const g2o::SE3Quat negative = g2o::SE3Quat::exp(update) * Tcw;
+
+            _jacobianOplusXi(1, i) = curvatureScale *
+                                      (projectedCurvature(positive) - projectedCurvature(negative)) /
+                                      (2.0 * delta);
+        }
     }
 
     bool EdgeSE3ProjectXYZOnlyPoseToBody::read(std::istream &is)
@@ -367,203 +476,4 @@ namespace ORB_SLAM3
             }
         return os.good();
     }
-
-    EdgeSE3ProjectBezierPointOnlyPose::EdgeSE3ProjectBezierPointOnlyPose()
-        : Xw(Eigen::Vector3d::Zero()),
-          normal(Eigen::Vector2d::Zero()),
-          pCamera(nullptr)
-    {
-        information().setIdentity();
-    }
-
-    void EdgeSE3ProjectBezierPointOnlyPose::computeError()
-    {
-        assert(_vertices[0] != nullptr);
-        assert(pCamera != nullptr);
-
-        const auto *v =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
-        const Eigen::Vector3d Xc = v->estimate().map(Xw);
-
-        const double normalNorm = normal.norm();
-        assert(normalNorm > 1e-12);
-        if (normalNorm <= 1e-12)
-        {
-            _error.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d projected = pCamera->project(Xc);
-        const Eigen::Vector2d unitNormal = normal / normalNorm;
-
-        // _measurement is the closest point on the observed image curve.
-        _error[0] = unitNormal.dot(projected - _measurement);
-    }
-
-    bool EdgeSE3ProjectBezierPointOnlyPose::isDepthPositive() const
-    {
-        assert(_vertices[0] != nullptr);
-
-        const auto *v =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
-        return v->estimate().map(Xw).z() > 0.0;
-    }
-
-    void EdgeSE3ProjectBezierPointOnlyPose::linearizeOplus()
-    {
-        assert(_vertices[0] != nullptr);
-        assert(pCamera != nullptr);
-
-        const auto *v =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[0]);
-        const Eigen::Vector3d Xc = v->estimate().map(Xw);
-
-        const double x = Xc.x();
-        const double y = Xc.y();
-        const double z = Xc.z();
-
-        Eigen::Matrix<double, 3, 6> Jse3;
-        Jse3 << 0, z, -y, 1, 0, 0,
-            -z, 0, x, 0, 1, 0,
-            y, -x, 0, 0, 0, 1;
-
-        const double normalNorm = normal.norm();
-        assert(normalNorm > 1e-12);
-        if (normalNorm <= 1e-12)
-        {
-            _jacobianOplusXi.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d unitNormal = normal / normalNorm;
-        _jacobianOplusXi =
-            unitNormal.transpose() * pCamera->projectJac(Xc) * Jse3;
-    }
-
-    bool EdgeSE3ProjectBezierPointOnlyPose::read(std::istream &is)
-    {
-        is >> _measurement[0] >> _measurement[1]
-           >> information()(0, 0)
-           >> Xw[0] >> Xw[1] >> Xw[2]
-           >> normal[0] >> normal[1];
-
-        // pCamera cannot be serialized and must be restored by the caller.
-        return static_cast<bool>(is);
-    }
-
-    bool EdgeSE3ProjectBezierPointOnlyPose::write(std::ostream &os) const
-    {
-        os << measurement()[0] << " "
-           << measurement()[1] << " "
-           << information()(0, 0) << " "
-           << Xw[0] << " " << Xw[1] << " " << Xw[2] << " "
-           << normal[0] << " " << normal[1];
-        return os.good();
-    }
-
-    EdgeSE3ProjectBezierPoint::EdgeSE3ProjectBezierPoint()
-        : normal(Eigen::Vector2d::Zero()),
-          pCamera(nullptr)
-    {
-        information().setIdentity();
-    }
-
-    void EdgeSE3ProjectBezierPoint::computeError()
-    {
-        assert(_vertices[0] != nullptr);
-        assert(_vertices[1] != nullptr);
-        assert(pCamera != nullptr);
-
-        const auto *vPoint =
-            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
-        const auto *vPose =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
-
-        const double normalNorm = normal.norm();
-        if (normalNorm <= 1e-12)
-        {
-            _error.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d projected =
-            pCamera->project(vPose->estimate().map(vPoint->estimate()));
-        const Eigen::Vector2d unitNormal = normal / normalNorm;
-
-        _error[0] = unitNormal.dot(projected - _measurement);
-    }
-
-    bool EdgeSE3ProjectBezierPoint::isDepthPositive() const
-    {
-        assert(_vertices[0] != nullptr);
-        assert(_vertices[1] != nullptr);
-
-        const auto *vPoint =
-            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
-        const auto *vPose =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
-
-        return vPose->estimate().map(vPoint->estimate()).z() > 0.0;
-    }
-
-    void EdgeSE3ProjectBezierPoint::linearizeOplus()
-    {
-        assert(_vertices[0] != nullptr);
-        assert(_vertices[1] != nullptr);
-        assert(pCamera != nullptr);
-
-        const auto *vPoint =
-            static_cast<const g2o::VertexSBAPointXYZ *>(_vertices[0]);
-        const auto *vPose =
-            static_cast<const g2o::VertexSE3Expmap *>(_vertices[1]);
-
-        const g2o::SE3Quat T(vPose->estimate());
-        const Eigen::Vector3d Xw = vPoint->estimate();
-        const Eigen::Vector3d Xc = T.map(Xw);
-
-        const double normalNorm = normal.norm();
-        if (normalNorm <= 1e-12)
-        {
-            _jacobianOplusXi.setZero();
-            _jacobianOplusXj.setZero();
-            return;
-        }
-
-        const Eigen::Vector2d unitNormal = normal / normalNorm;
-        const Eigen::Matrix<double, 2, 3> projectJac = pCamera->projectJac(Xc);
-
-        _jacobianOplusXi =
-            unitNormal.transpose() * projectJac * T.rotation().toRotationMatrix();
-
-        const double x = Xc.x();
-        const double y = Xc.y();
-        const double z = Xc.z();
-
-        Eigen::Matrix<double, 3, 6> Jse3;
-        Jse3 << 0, z, -y, 1, 0, 0,
-            -z, 0, x, 0, 1, 0,
-            y, -x, 0, 0, 0, 1;
-
-        _jacobianOplusXj =
-            unitNormal.transpose() * projectJac * Jse3;
-    }
-
-    bool EdgeSE3ProjectBezierPoint::read(std::istream &is)
-    {
-        is >> _measurement[0] >> _measurement[1]
-           >> information()(0, 0)
-           >> normal[0] >> normal[1];
-
-        return static_cast<bool>(is);
-    }
-
-    bool EdgeSE3ProjectBezierPoint::write(std::ostream &os) const
-    {
-        os << measurement()[0] << " "
-           << measurement()[1] << " "
-           << information()(0, 0) << " "
-           << normal[0] << " " << normal[1];
-        return os.good();
-    }
-
 }

@@ -56,7 +56,7 @@ namespace ORB_SLAM3
                                                                        mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap), mbCurrentPlaceRecognition(false), mNameFile(F.mNameFile), mnMergeCorrectedForKF(0),
                                                                        mpCamera(F.mpCamera), mpCamera2(F.mpCamera2), mvLeftToRightMatch(F.mvLeftToRightMatch), mvRightToLeftMatch(F.mvRightToLeftMatch),
                                                                        mTlr(F.GetRelativePoseTlr()), mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0),
-                                                                       mbHasVelocity(false), mImgLeft(F.mImgLeft.clone()), mvEdges(F.mvEdges), mvBezierCurves(F.mvBezierCurves), mvpMapBeziers(F.mvpMapBeziers)
+                                                                       mbHasVelocity(false), mImgLeft(F.mImgLeft.clone()), mvBezierCurves(F.mvBezierCurves), mvpMapCurves(F.mvpMapBeziers)
     {
         mnId = nNextId++;
 
@@ -626,11 +626,11 @@ namespace ORB_SLAM3
             }
         }
 
-        for (int i = 0; i < mvpMapBeziers.size(); i++)
+        for (int i = 0; i < mvpMapCurves.size(); i++)
         {
-            if (mvpMapBeziers[i])
+            if (mvpMapCurves[i])
             {
-                mvpMapBeziers[i]->EraseObservation(this);
+                mvpMapCurves[i]->EraseObservation(this);
             }
         }
 
@@ -806,96 +806,96 @@ namespace ORB_SLAM3
             return false;
     }
 
-    void KeyFrame::AddMapBezier(MapBezier *pMB, const size_t &idx)
+    void KeyFrame::AddMapCurve(MapCurve *pMB, const size_t &idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        mvpMapBeziers[idx] = pMB;
+        mvpMapCurves[idx] = pMB;
     }
 
-    void KeyFrame::EraseMapBezierMatch(const int &idx)
+    void KeyFrame::EraseMapCurveMatch(const int &idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        mvpMapBeziers[idx] = static_cast<MapBezier *>(NULL);
+        mvpMapCurves[idx] = static_cast<MapCurve *>(NULL);
     }
 
-    void KeyFrame::EraseMapBezierMatch(MapBezier *pMB)
+    void KeyFrame::EraseMapCurveMatch(MapCurve *pMB)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        for (size_t i = 0, iend = mvpMapBeziers.size(); i < iend; ++i)
+        for (size_t i = 0, iend = mvpMapCurves.size(); i < iend; ++i)
         {
-            if (mvpMapBeziers[i] == pMB)
-                mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+            if (mvpMapCurves[i] == pMB)
+                mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
         }
     }
 
-    void KeyFrame::ReplaceMapBezierMatch(const int &idx, MapBezier *pMB)
+    void KeyFrame::ReplaceMapCurveMatch(const int &idx, MapCurve *pMB)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        mvpMapBeziers[idx] = pMB;
+        mvpMapCurves[idx] = pMB;
     }
 
-    void KeyFrame::ReplaceMapBezierMatch(MapBezier *pOldMB, MapBezier *pNewMB)
+    void KeyFrame::ReplaceMapCurveMatch(MapCurve *pOldMB, MapCurve *pNewMB)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        for (size_t i = 0, iend = mvpMapBeziers.size(); i < iend; ++i)
+        for (size_t i = 0, iend = mvpMapCurves.size(); i < iend; ++i)
         {
-            if (mvpMapBeziers[i] == pOldMB)
-                mvpMapBeziers[i] = pNewMB;
+            if (mvpMapCurves[i] == pOldMB)
+                mvpMapCurves[i] = pNewMB;
         }
     }
 
-    std::set<MapBezier *> KeyFrame::GetMapBeziers()
+    std::set<MapCurve *> KeyFrame::GetMapCurves()
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        set<MapBezier *> s;
-        for (size_t i = 0, iend = mvpMapBeziers.size(); i < iend; i++)
+        set<MapCurve *> s;
+        for (size_t i = 0, iend = mvpMapCurves.size(); i < iend; i++)
         {
-            if (!mvpMapBeziers[i])
+            if (!mvpMapCurves[i])
                 continue;
-            MapBezier *pMB = mvpMapBeziers[i];
+            MapCurve *pMB = mvpMapCurves[i];
             if (!pMB->isBad())
                 s.insert(pMB);
         }
         return s;
     }
 
-    std::vector<MapBezier *> KeyFrame::GetMapBezierMatches()
+    std::vector<MapCurve *> KeyFrame::GetMapCurveMatches()
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        return mvpMapBeziers;
+        return mvpMapCurves;
     }
 
-    int KeyFrame::TrackedMapBeziers(const int &minObs)
+    int KeyFrame::TrackedMapCurves(const int &minObs)
     {
         unique_lock<mutex> lock(mMutexFeatures);
 
-        int nBeziers = 0;
+        int nCurves = 0;
         const bool bCheckObs = minObs > 0;
-        for (int i = 0; i < mvpMapBeziers.size(); i++)
+        for (int i = 0; i < mvpMapCurves.size(); i++)
         {
-            MapBezier *pMB = mvpMapBeziers[i];
+            MapCurve *pMB = mvpMapCurves[i];
             if (pMB)
             {
                 if (!pMB->isBad())
                 {
                     if (bCheckObs)
                     {
-                        if (mvpMapBeziers[i]->Observations() >= minObs)
-                            nBeziers++;
+                        if (mvpMapCurves[i]->Observations() >= minObs)
+                            nCurves++;
                     }
                     else
-                        nBeziers++;
+                        nCurves++;
                 }
             }
         }
 
-        return nBeziers;
+        return nCurves;
     }
 
-    MapBezier *KeyFrame::GetMapBezier(size_t idx)
+    MapCurve *KeyFrame::GetMapCurve(size_t idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);
-        return mvpMapBeziers[idx];
+        return mvpMapCurves[idx];
     }
 
     float KeyFrame::ComputeSceneMedianDepth(const int q)

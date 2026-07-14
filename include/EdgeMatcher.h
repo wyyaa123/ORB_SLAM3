@@ -4,7 +4,7 @@
 #include "KeyFrame.h"
 #include "Frame.h"
 #include "Map.h"
-#include "MapBezier.h"
+#include "MapCurve.h"
 
 #include <unordered_set>
 
@@ -13,7 +13,7 @@ namespace ORB_SLAM3
     class KeyFrame;
     class Map;
     class Frame;
-    class MapBezier;
+    class MapCurve;
 
     struct CurveCandidate
     {
@@ -41,17 +41,17 @@ namespace ORB_SLAM3
 
         int SearchByProjection(Frame &currentFrame, const Frame &lastFrame);
 
-        int SearchByProjection(KeyFrame *pKF, Frame &currentFrame, std::vector<MapBezier *> &vpMapBezierMatches);
+        int SearchByProjection(KeyFrame *pKF, Frame &currentFrame, std::vector<MapCurve *> &vpMapBezierMatches);
 
-        int SearchByProjection(KeyFrame *pReferenceKF, KeyFrame *pTargetKF, std::vector<MapBezier *> &vpMapBezierMatches);
+        int SearchByProjection(KeyFrame *pReferenceKF, KeyFrame *pTargetKF, std::vector<MapCurve *> &vpMapBezierMatches);
 
-        int SearchByProjection(Frame &F, const std::vector<MapBezier *> &vpMapBeziers);
+        int SearchByProjection(Frame &F, const std::vector<MapCurve *> &vpMapBeziers);
 
-        int SearchByProjection(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapBezier *> &vpBeziers, std::vector<MapBezier *> &vpMatched);
+        int SearchByProjection(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapCurve *> &vpBeziers, std::vector<MapCurve *> &vpMatched);
 
-        int Fuse(KeyFrame *targetKF, const std::vector<MapBezier *> &vpMapBeziers);
+        int Fuse(KeyFrame *targetKF, const std::vector<MapCurve *> &vpMapBeziers);
 
-        int Fuse(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapBezier *> &vpBeziers, float th, vector<MapBezier *> &vpReplaceBeziers);
+        int Fuse(KeyFrame *pKF, cv::Mat Scw, const std::vector<MapCurve *> &vpBeziers, float th, vector<MapCurve *> &vpReplaceBeziers);
     };
 } // namespace ORB_SLAM3
 

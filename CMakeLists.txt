@@ -89,11 +89,11 @@ src/GeometricTools.cc
 src/TwoViewReconstruction.cc
 src/Config.cc
 src/Settings.cc
-src/edge.cpp
-src/edgeCluster.cpp
-src/bezierCurve.cpp
-src/edgeExtracter.cc
-src/MapBezier.cc
+src/Edge.cpp
+src/EdgeCluster.cpp
+src/BezierCurve.cpp
+src/EdgeExtracter.cc
+src/MapCurve.cc
 src/EdgeMatcher.cc
 src/Hungarian.cpp
 include/System.h
@@ -126,12 +126,11 @@ include/TwoViewReconstruction.h
 include/SerializationUtils.h
 include/Config.h
 include/Settings.h
-include/edge.h
-include/edgeCluster.h
-include/patch.h
-include/bezierCurve.h
-include/edgeExtracter.h
-include/MapBezier.h
+include/Edge.h
+include/EdgeCluster.h
+include/BezierCurve.h
+include/EdgeExtracter.h
+include/MapCurve.h
 include/EdgeMatcher.h
 include/Hungarian.h)
 
@@ -180,11 +179,11 @@ target_link_libraries(exp ${PROJECT_NAME})
 
 
 # RGB-D inertial examples
-# set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)
 
-# add_executable(rgbds_inertial
-#         Examples/RGB-D-Inertial/rgbds_inertial.cc)
-# target_link_libraries(rgbds_inertial ${PROJECT_NAME})
+add_executable(rgbds_inertial
+        Examples/RGB-D-Inertial/rgbds_inertial.cc)
+target_link_libraries(rgbds_inertial ${PROJECT_NAME})
 
 # if(realsense2_FOUND)
 #     add_executable(rgbd_inertial_realsense_D435i

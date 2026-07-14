@@ -86,7 +86,7 @@ public:
     // Method for change components in the current map
     void AddKeyFrame(KeyFrame* pKF);
     void AddMapPoint(MapPoint* pMP);
-    void AddMapBezier(MapBezier* pMB);
+    void AddMapCurve(MapCurve* pMB);
     //void EraseMapPoint(MapPoint* pMP);
     //void EraseKeyFrame(KeyFrame* pKF);
 
@@ -95,7 +95,7 @@ public:
 
     /* All methods without Map pointer work on current map */
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
-    void SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs);
+    void SetReferenceMapCurves(const std::vector<MapCurve *> &vpMBs);
     void InformNewBigChange();
     int GetLastBigChangeIdx();
 
@@ -106,8 +106,8 @@ public:
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
-    std::vector<MapBezier*> GetAllMapBeziers();
-    std::vector<MapBezier*> GetReferenceMapBeziers();
+    std::vector<MapCurve*> GetAllMapCurves();
+    std::vector<MapCurve*> GetReferenceMapCurves();
 
     vector<Map*> GetAllMaps();
 

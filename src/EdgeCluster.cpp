@@ -1,4 +1,4 @@
-#include "edgeCluster.h"
+#include "EdgeCluster.h"
 
 EdgeCluster::EdgeCluster(std::vector<edgePoint> list) 
 {

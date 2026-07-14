@@ -1,4 +1,4 @@
-#include "bezierCurve.h"
+#include "BezierCurve.h"
 
 #include <algorithm>
 #include <cmath>
@@ -165,9 +165,7 @@ void BezierCurve::sampleByArcLengthSpacing(int spacing, std::size_t lookupSegmen
     for (std::size_t i = 0; i <= segmentCount; ++i)
     {
         const double ratio = static_cast<double>(i) / static_cast<double>(segmentCount);
-        const double t = totalLength > DBL_EPSILON
-                             ? parameterAtLength(table, totalLength * ratio)
-                             : ratio;
+        const double t = totalLength > DBL_EPSILON ? parameterAtLength(table, totalLength * ratio) : ratio;
         appendSample(*this, evaluate(controlPoints, t), removeDuplicatePixels);
     }
 }

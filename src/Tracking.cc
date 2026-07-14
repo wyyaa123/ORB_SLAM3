@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <unordered_set>
 
 #include <mutex>
 #include <chrono>
@@ -1623,7 +1624,7 @@ namespace ORB_SLAM3
         vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
 #endif
 
-        Track();
+        TrackWithCurves();
 
         return mCurrentFrame.GetPose();
     }
@@ -1864,7 +1865,7 @@ namespace ORB_SLAM3
         // TODO To implement...
     }
 
-    void Tracking::Track()
+    void Tracking::TrackWithCurves()
     {
 
         if (bStepByStep)
@@ -1969,6 +1970,566 @@ namespace ORB_SLAM3
 
         if (mState == NOT_INITIALIZED)
         {
+            StereoInitializationWithCurves();
+
+            if (mState != OK) // If rightly initialized, mState=OK
+            {
+                mLastFrame = Frame(mCurrentFrame);
+                return;
+            }
+
+            if (mpAtlas->GetAllMaps().size() == 1)
+            {
+                mnFirstFrameId = mCurrentFrame.mnId;
+            }
+        }
+        else
+        {
+            // System is initialized. Track Frame.
+            bool bOK;
+
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_StartPosePred = std::chrono::steady_clock::now();
+#endif
+
+            // Initial camera pose estimation using motion model or relocalization (if tracking is lost)
+            if (!mbOnlyTracking)
+            {
+
+                // State OK
+                // Local Mapping is activated. This is the normal behaviour, unless
+                // you explicitly activate the "only tracking" mode.
+                if (mState == OK)
+                {
+
+                    // Local Mapping might have changed some MapPoints tracked in last frame
+                    // 因为 ORB-SLAM3 是多线程系统。Tracking 在跟踪当前帧时，LocalMapping / LoopClosing 可能同时对地图点做融合。例如两个 MapPoint 被判断为同一个真实空间点，就会调用。
+                    CheckReplacedInLastFrameWithCurves();
+
+                    // printf("mbVelocity is %s, pCurrentMap->isImuInitialized() is %s.\n", mbVelocity ? "true" : "false", pCurrentMap->isImuInitialized() ? "true" : "false");
+                    // Step 6.2 运动模型是空的并且imu未初始化或刚完成重定位，跟踪参考关键帧；否则恒速模型跟踪
+                    // pCurrentMap->isImuInitialized()会在方法PreintegrateIMU()中被设置为true
+                    // 第一个条件,如果运动模型为空并且imu未初始化,说明是刚开始第一帧跟踪，或者已经跟丢了。
+                    // 第二个条件,如果当前帧紧紧地跟着在重定位的帧的后面，我们用重定位帧来恢复位姿
+                    // mnLastRelocFrameId 上一次重定位的那一帧
+                    if ((!mbVelocity && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId < mnLastRelocFrameId + 2)
+                    {
+                        Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
+                        bOK = TrackReferenceKeyFrameWithCurves();
+                    }
+                    else
+                    {
+                        Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
+                        // 用恒速模型跟踪。所谓的恒速就是假设上上帧到上一帧的位姿=上一帧的位姿到当前帧位姿
+                        // 根据恒速模型设定当前帧的初始位姿，用最近的普通帧来跟踪当前的普通帧
+                        // 通过投影的方式在参考帧中找当前帧特征点的匹配点，优化每个特征点所对应3D点的投影误差即可得到位姿
+                        bOK = TrackWithMotionModelWithCurves();
+                        if (!bOK)
+                            bOK = TrackReferenceKeyFrameWithCurves();
+                    }
+
+                    if (!bOK)
+                    {
+                        // mnFramesToResetIMU 是一个 重定位后 IMU 状态重置/恢复的帧数窗口
+                        if (mCurrentFrame.mnId <= (mnLastRelocFrameId + mnFramesToResetIMU) &&
+                            (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
+                        {
+                            mState = LOST;
+                        }
+                        else if (pCurrentMap->KeyFramesInMap() > 10)
+                        {
+                            // cout << "KF in map: " << pCurrentMap->KeyFramesInMap() << endl;
+                            mState = RECENTLY_LOST;
+                            mTimeStampLost = mCurrentFrame.mTimeStamp;
+                        }
+                        else
+                        {
+                            mState = LOST;
+                        }
+                    }
+                }
+                else
+                {
+                    // 如果跟丢了，先判断是短暂跟丢还是完全跟丢。短暂跟丢的话，先用IMU预测位姿，如果IMU预测的位姿不可靠或者时间超过阈值了，就认为完全跟丢了；完全跟丢了的话，直接重置地图或者重定位。
+                    if (mState == RECENTLY_LOST)
+                    {
+                        Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
+
+                        bOK = true;
+                        if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
+                        {
+                            if (pCurrentMap->isImuInitialized())
+                                PredictStateIMU();
+                            else
+                                bOK = false;
+
+                            if (mCurrentFrame.mTimeStamp - mTimeStampLost > time_recently_lost)
+                            {
+                                mState = LOST;
+                                Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
+                                bOK = false;
+                            }
+                        }
+                        else
+                        {
+                            // Relocalization
+                            bOK = Relocalization();
+                            // std::cout << "mCurrentFrame.mTimeStamp:" << to_string(mCurrentFrame.mTimeStamp) << std::endl;
+                            // std::cout << "mTimeStampLost:" << to_string(mTimeStampLost) << std::endl;
+                            if (mCurrentFrame.mTimeStamp - mTimeStampLost > 3.0f && !bOK)
+                            {
+                                mState = LOST;
+                                Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
+                                bOK = false;
+                            }
+                        }
+                    }
+                    else if (mState == LOST)
+                    {
+
+                        Verbose::PrintMess("A new map is started...", Verbose::VERBOSITY_NORMAL);
+
+                        if (pCurrentMap->KeyFramesInMap() < 10)
+                        {
+                            mpSystem->ResetActiveMap();
+                            Verbose::PrintMess("Reseting current map...", Verbose::VERBOSITY_NORMAL);
+                        }
+                        else
+                            CreateMapInAtlas();
+
+                        if (mpLastKeyFrame)
+                            mpLastKeyFrame = static_cast<KeyFrame *>(NULL);
+
+                        Verbose::PrintMess("done", Verbose::VERBOSITY_NORMAL);
+
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                // Localization Mode: Local Mapping is deactivated (TODO Not available in inertial mode)
+                if (mState == LOST)
+                {
+                    if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                        Verbose::PrintMess("IMU. State LOST", Verbose::VERBOSITY_NORMAL);
+                    bOK = Relocalization();
+                }
+                else
+                {
+                    if (!mbVO)
+                    {
+                        // In last frame we tracked enough MapPoints in the map
+                        if (mbVelocity)
+                        {
+                            bOK = TrackWithMotionModelWithCurves();
+                        }
+                        else
+                        {
+                            bOK = TrackReferenceKeyFrameWithCurves();
+                        }
+                    }
+                    else
+                    {
+                        // In last frame we tracked mainly "visual odometry" points.
+
+                        // We compute two camera poses, one from motion model and one doing relocalization.
+                        // If relocalization is sucessfull we choose that solution, otherwise we retain
+                        // the "visual odometry" solution.
+
+                        bool bOKMM = false;
+                        bool bOKReloc = false;
+                        vector<MapPoint *> vpMPsMM;
+                        vector<bool> vbOutMM;
+                        Sophus::SE3f TcwMM;
+                        if (mbVelocity)
+                        {
+                            bOKMM = TrackWithMotionModelWithCurves();
+                            vpMPsMM = mCurrentFrame.mvpMapPoints;
+                            vbOutMM = mCurrentFrame.mvbOutlier;
+                            TcwMM = mCurrentFrame.GetPose();
+                        }
+                        bOKReloc = Relocalization();
+
+                        if (bOKMM && !bOKReloc)
+                        {
+                            mCurrentFrame.SetPose(TcwMM);
+                            mCurrentFrame.mvpMapPoints = vpMPsMM;
+                            mCurrentFrame.mvbOutlier = vbOutMM;
+
+                            if (mbVO)
+                            {
+                                for (int i = 0; i < mCurrentFrame.N; i++)
+                                {
+                                    if (mCurrentFrame.mvpMapPoints[i] && !mCurrentFrame.mvbOutlier[i])
+                                    {
+                                        mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
+                                    }
+                                }
+                            }
+                        }
+                        else if (bOKReloc)
+                        {
+                            mbVO = false;
+                        }
+
+                        bOK = bOKReloc || bOKMM;
+                    }
+                }
+            }
+
+            if (!mCurrentFrame.mpReferenceKF)
+                mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_EndPosePred = std::chrono::steady_clock::now();
+
+            double timePosePred = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_EndPosePred - time_StartPosePred).count();
+            vdPosePred_ms.push_back(timePosePred);
+#endif
+
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_StartLMTrack = std::chrono::steady_clock::now();
+#endif
+            // If we have an initial estimation of the camera pose and matching. Track the local map.
+            if (!mbOnlyTracking)
+            {
+                if (bOK)
+                {
+                    bOK = TrackLocalMapWithCurves();
+                }
+                if (!bOK)
+                    cout << "Fail to track local map!" << endl;
+            }
+            else
+            {
+                // mbVO true means that there are few matches to MapPoints in the map. We cannot retrieve
+                // a local map and therefore we do not perform TrackLocalMap(). Once the system relocalizes
+                // the camera we will use the local map again.
+                if (bOK && !mbVO)
+                    bOK = TrackLocalMapWithCurves();
+            }
+
+            if (bOK)
+                mState = OK;
+            else if (mState == OK)
+            {
+                if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                {
+                    Verbose::PrintMess("Track lost for less than one second...", Verbose::VERBOSITY_NORMAL);
+                    if (!pCurrentMap->isImuInitialized() || !pCurrentMap->GetIniertialBA2())
+                    {
+                        cout << "IMU is not or recently initialized. Reseting active map..." << endl;
+                        mpSystem->ResetActiveMap();
+                    }
+
+                    mState = RECENTLY_LOST;
+                }
+                else
+                    mState = RECENTLY_LOST; // visual to lost
+
+                /*if(mCurrentFrame.mnId>mnLastRelocFrameId+mMaxFrames)
+                {*/
+                mTimeStampLost = mCurrentFrame.mTimeStamp;
+                //}
+            }
+
+            // Save frame if recent relocalization, since they are used for IMU reset (as we are making copy, it shluld be once mCurrFrame is completely modified)
+            if ((mCurrentFrame.mnId < (mnLastRelocFrameId + mnFramesToResetIMU)) && (mCurrentFrame.mnId > mnFramesToResetIMU) &&
+                (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && pCurrentMap->isImuInitialized())
+            {
+                // TODO check this situation
+                Verbose::PrintMess("Saving pointer to frame. imu needs reset...", Verbose::VERBOSITY_NORMAL);
+                Frame *pF = new Frame(mCurrentFrame);
+                pF->mpPrevFrame = new Frame(mLastFrame);
+
+                // Load preintegration
+                pF->mpImuPreintegratedFrame = new IMU::Preintegrated(mCurrentFrame.mpImuPreintegratedFrame);
+            }
+
+            if (pCurrentMap->isImuInitialized())
+            {
+                if (bOK)
+                {
+                    if (mCurrentFrame.mnId == (mnLastRelocFrameId + mnFramesToResetIMU))
+                    {
+                        cout << "RESETING FRAME!!!" << endl;
+                        ResetFrameIMU();
+                    }
+                    else if (mCurrentFrame.mnId > (mnLastRelocFrameId + 30))
+                        mLastBias = mCurrentFrame.mImuBias;
+                }
+            }
+
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_EndLMTrack = std::chrono::steady_clock::now();
+
+            double timeLMTrack = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_EndLMTrack - time_StartLMTrack).count();
+            vdLMTrack_ms.push_back(timeLMTrack);
+#endif
+
+            // Update drawer
+            mpFrameDrawer->Update(this);
+            if (mCurrentFrame.isSet())
+                mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.GetPose());
+
+            if (bOK || mState == RECENTLY_LOST)
+            {
+                // Update motion model
+                if (mLastFrame.isSet() && mCurrentFrame.isSet())
+                {
+                    Sophus::SE3f LastTwc = mLastFrame.GetPose().inverse();
+                    mVelocity = mCurrentFrame.GetPose() * LastTwc;
+                    mbVelocity = true;
+                }
+                else
+                {
+                    mbVelocity = false;
+                }
+
+                if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                    mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.GetPose());
+
+                // Clean VO matches
+                for (int i = 0; i < mCurrentFrame.N; i++)
+                {
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+                    if (pMP)
+                        if (pMP->Observations() < 1)
+                        {
+                            mCurrentFrame.mvbOutlier[i] = false;
+                            mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                        }
+                }
+
+                for (int i = 0; i < mCurrentFrame.NC; i++)
+                {
+                    MapCurve *pMP = mCurrentFrame.mvpMapBeziers[i];
+                    if (pMP)
+                        if (pMP->Observations() < 1)
+                        {
+                            mCurrentFrame.mvbBezierOutlier[i] = false;
+                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                        }
+                }
+
+                // Delete temporal MapPoints
+                for (list<MapPoint *>::iterator lit = mlpTemporalPoints.begin(), lend = mlpTemporalPoints.end(); lit != lend; lit++)
+                {
+                    MapPoint *pMP = *lit;
+                    delete pMP;
+                }
+                mlpTemporalPoints.clear();
+
+                for (list<MapCurve *>::iterator lit = mlpTemporalCurves.begin(), lend = mlpTemporalCurves.end(); lit != lend; ++lit)
+                {
+                    MapCurve *pMapCurve = *lit;
+                    delete pMapCurve;
+                }
+                mlpTemporalCurves.clear();
+
+#ifdef REGISTER_TIMES
+                std::chrono::steady_clock::time_point time_StartNewKF = std::chrono::steady_clock::now();
+#endif
+                bool bNeedKF = NeedNewKeyFrameWithCurves();
+
+                // Check if we need to insert a new keyframe
+                // if(bNeedKF && bOK)
+                if (bNeedKF && (bOK || (mInsertKFsLost && mState == RECENTLY_LOST &&
+                                        (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))))
+                    CreateNewKeyFrameWithCurves();
+
+#ifdef REGISTER_TIMES
+                std::chrono::steady_clock::time_point time_EndNewKF = std::chrono::steady_clock::now();
+
+                double timeNewKF = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_EndNewKF - time_StartNewKF).count();
+                vdNewKF_ms.push_back(timeNewKF);
+#endif
+
+                // We allow points with high innovation (considererd outliers by the Huber Function)
+                // pass to the new keyframe, so that bundle adjustment will finally decide
+                // if they are outliers or not. We don't want next frame to estimate its position
+                // with those points so we discard them in the frame. Only has effect if lastframe is tracked
+                for (int i = 0; i < mCurrentFrame.N; i++)
+                {
+                    if (mCurrentFrame.mvpMapPoints[i] && mCurrentFrame.mvbOutlier[i])
+                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                }
+
+                if (mCurrentFrame.mbBezierOutliersValid)
+                {
+                    for (int i = 0; i < mCurrentFrame.NC; i++)
+                    {
+                        if (mCurrentFrame.mvpMapBeziers[i] && mCurrentFrame.mvbBezierOutlier[i])
+                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                    }
+                }
+            }
+
+            // Reset if the camera get lost soon after initialization
+            if (mState == LOST)
+            {
+                if (pCurrentMap->KeyFramesInMap() <= 10)
+                {
+                    mpSystem->ResetActiveMap();
+                    return;
+                }
+                if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                    if (!pCurrentMap->isImuInitialized())
+                    {
+                        Verbose::PrintMess("Track lost before IMU initialisation, reseting...", Verbose::VERBOSITY_QUIET);
+                        mpSystem->ResetActiveMap();
+                        return;
+                    }
+
+                CreateMapInAtlas();
+
+                return;
+            }
+
+            if (!mCurrentFrame.mpReferenceKF)
+                mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+            mLastFrame = Frame(mCurrentFrame);
+        }
+
+        if (mState == OK || mState == RECENTLY_LOST)
+        {
+            // Store frame pose information to retrieve the complete camera trajectory afterwards.
+            if (mCurrentFrame.isSet())
+            {
+                // 参考帧到当前帧的位姿相对变换
+                Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() * mCurrentFrame.mpReferenceKF->GetPoseInverse();
+                mlRelativeFramePoses.push_back(Tcr_);
+                mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
+                mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+                mlbLost.push_back(mState == LOST);
+            }
+            else
+            {
+                // This can happen if tracking is lost
+                mlRelativeFramePoses.push_back(mlRelativeFramePoses.back());
+                mlpReferences.push_back(mlpReferences.back());
+                mlFrameTimes.push_back(mlFrameTimes.back());
+                mlbLost.push_back(mState == LOST);
+            }
+        }
+
+#ifdef REGISTER_LOOP
+        if (Stop())
+        {
+
+            // Safe area to stop
+            while (isStopped())
+            {
+                usleep(3000);
+            }
+        }
+#endif
+    }
+
+    void Tracking::Track()
+    {
+        if (bStepByStep)
+        {
+            std::cout << "Tracking: Waiting to the next step" << std::endl;
+            while (!mbStep && bStepByStep)
+                usleep(500);
+            mbStep = false;
+        }
+
+        if (mpLocalMapper->mbBadImu)
+        {
+            cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
+            mpSystem->ResetActiveMap();
+            return;
+        }
+
+        Map *pCurrentMap = mpAtlas->GetCurrentMap();
+        if (!pCurrentMap)
+        {
+            cout << "ERROR: There is not an active map in the atlas" << endl;
+        }
+
+        if (mState != NO_IMAGES_YET)
+        {
+            if (mLastFrame.mTimeStamp > mCurrentFrame.mTimeStamp)
+            {
+                cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
+                unique_lock<mutex> lock(mMutexImuQueue);
+                mlQueueImuData.clear();
+                CreateMapInAtlas();
+                return;
+            }
+            else if (mCurrentFrame.mTimeStamp > mLastFrame.mTimeStamp + 1.0)
+            {
+                // cout << mCurrentFrame.mTimeStamp << ", " << mLastFrame.mTimeStamp << endl;
+                // cout << "id last: " << mLastFrame.mnId << "    id curr: " << mCurrentFrame.mnId << endl;
+                if (mpAtlas->isInertial())
+                {
+
+                    if (mpAtlas->isImuInitialized())
+                    {
+                        cout << "Timestamp jump detected. State set to LOST. Reseting IMU integration..." << endl;
+                        if (!pCurrentMap->GetIniertialBA2())
+                        {
+                            mpSystem->ResetActiveMap();
+                        }
+                        else
+                        {
+                            CreateMapInAtlas();
+                        }
+                    }
+                    else
+                    {
+                        cout << "Timestamp jump detected, before IMU initialization. Reseting..." << endl;
+                        mpSystem->ResetActiveMap();
+                    }
+                    return;
+                }
+            }
+        }
+
+        if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && mpLastKeyFrame)
+            mCurrentFrame.SetNewBias(mpLastKeyFrame->GetImuBias());
+
+        if (mState == NO_IMAGES_YET)
+        {
+            mState = NOT_INITIALIZED;
+        }
+
+        mLastProcessedState = mState;
+
+        if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mbCreatedMap)
+        {
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_StartPreIMU = std::chrono::steady_clock::now();
+#endif
+            PreintegrateIMU();
+#ifdef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_EndPreIMU = std::chrono::steady_clock::now();
+
+            double timePreImu = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_EndPreIMU - time_StartPreIMU).count();
+            vdIMUInteg_ms.push_back(timePreImu);
+#endif
+        }
+        mbCreatedMap = false;
+
+        // Get Map Mutex -> Map cannot be changed
+        unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);
+
+        mbMapUpdated = false;
+
+        int nCurMapChangeIndex = pCurrentMap->GetMapChangeIndex();
+        int nMapChangeIndex = pCurrentMap->GetLastMapChange();
+        if (nCurMapChangeIndex > nMapChangeIndex)
+        {
+            pCurrentMap->SetLastMapChange(nCurMapChangeIndex);
+            mbMapUpdated = true;
+        }
+
+        if (mState == NOT_INITIALIZED)
+        {
             if (mSensor == System::STEREO || mSensor == System::RGBD || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             {
                 StereoInitialization();
@@ -2011,15 +2572,8 @@ namespace ORB_SLAM3
                 {
 
                     // Local Mapping might have changed some MapPoints tracked in last frame
-                    // 因为 ORB-SLAM3 是多线程系统。Tracking 在跟踪当前帧时，LocalMapping / LoopClosing 可能同时对地图点做融合。例如两个 MapPoint 被判断为同一个真实空间点，就会调用。
                     CheckReplacedInLastFrame();
 
-                    // printf("mbVelocity is %s, pCurrentMap->isImuInitialized() is %s.\n", mbVelocity ? "true" : "false", pCurrentMap->isImuInitialized() ? "true" : "false");
-                    // Step 6.2 运动模型是空的并且imu未初始化或刚完成重定位，跟踪参考关键帧；否则恒速模型跟踪
-                    // pCurrentMap->isImuInitialized()会在方法PreintegrateIMU()中被设置为true
-                    // 第一个条件,如果运动模型为空并且imu未初始化,说明是刚开始第一帧跟踪，或者已经跟丢了。
-                    // 第二个条件,如果当前帧紧紧地跟着在重定位的帧的后面，我们用重定位帧来恢复位姿
-                    // mnLastRelocFrameId 上一次重定位的那一帧
                     if ((!mbVelocity && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId < mnLastRelocFrameId + 2)
                     {
                         Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
@@ -2028,9 +2582,6 @@ namespace ORB_SLAM3
                     else
                     {
                         Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
-                        // 用恒速模型跟踪。所谓的恒速就是假设上上帧到上一帧的位姿=上一帧的位姿到当前帧位姿
-                        // 根据恒速模型设定当前帧的初始位姿，用最近的普通帧来跟踪当前的普通帧
-                        // 通过投影的方式在参考帧中找当前帧特征点的匹配点，优化每个特征点所对应3D点的投影误差即可得到位姿
                         bOK = TrackWithMotionModel();
                         if (!bOK)
                             bOK = TrackReferenceKeyFrame();
@@ -2038,7 +2589,6 @@ namespace ORB_SLAM3
 
                     if (!bOK)
                     {
-                        // mnFramesToResetIMU 是一个 重定位后 IMU 状态重置/恢复的帧数窗口
                         if (mCurrentFrame.mnId <= (mnLastRelocFrameId + mnFramesToResetIMU) &&
                             (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
                         {
@@ -2058,7 +2608,7 @@ namespace ORB_SLAM3
                 }
                 else
                 {
-                    // 如果跟丢了，先判断是短暂跟丢还是完全跟丢。短暂跟丢的话，先用IMU预测位姿，如果IMU预测的位姿不可靠或者时间超过阈值了，就认为完全跟丢了；完全跟丢了的话，直接重置地图或者重定位。
+
                     if (mState == RECENTLY_LOST)
                     {
                         Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
@@ -2310,17 +2860,6 @@ namespace ORB_SLAM3
                         }
                 }
 
-                for (int i = 0; i < mCurrentFrame.NB; i++)
-                {
-                    MapBezier *pMP = mCurrentFrame.mvpMapBeziers[i];
-                    if (pMP)
-                        if (pMP->Observations() < 1)
-                        {
-                            mCurrentFrame.mvbBezierOutlier[i] = false;
-                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
-                        }
-                }
-
                 // Delete temporal MapPoints
                 for (list<MapPoint *>::iterator lit = mlpTemporalPoints.begin(), lend = mlpTemporalPoints.end(); lit != lend; lit++)
                 {
@@ -2356,15 +2895,6 @@ namespace ORB_SLAM3
                     if (mCurrentFrame.mvpMapPoints[i] && mCurrentFrame.mvbOutlier[i])
                         mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
                 }
-
-                if (mCurrentFrame.mbBezierOutliersValid)
-                {
-                    for (int i = 0; i < mCurrentFrame.NB; i++)
-                    {
-                        if (mCurrentFrame.mvpMapBeziers[i] && mCurrentFrame.mvbBezierOutlier[i])
-                            mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
-                    }
-                }
             }
 
             // Reset if the camera get lost soon after initialization
@@ -2399,7 +2929,6 @@ namespace ORB_SLAM3
             // Store frame pose information to retrieve the complete camera trajectory afterwards.
             if (mCurrentFrame.isSet())
             {
-                // 参考帧到当前帧的位姿相对变换
                 Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() * mCurrentFrame.mpReferenceKF->GetPoseInverse();
                 mlRelativeFramePoses.push_back(Tcr_);
                 mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
@@ -2480,6 +3009,123 @@ namespace ORB_SLAM3
                     float z = mCurrentFrame.mvDepth[i];
                     if (z > 0)
                     {
+                        Eigen::Vector3f x3D;
+                        mCurrentFrame.UnprojectStereo(i, x3D);
+                        MapPoint *pNewMP = new MapPoint(x3D, pKFini, mpAtlas->GetCurrentMap());
+                        pNewMP->AddObservation(pKFini, i);
+                        pKFini->AddMapPoint(pNewMP, i);
+                        pNewMP->ComputeDistinctiveDescriptors();
+                        pNewMP->UpdateNormalAndDepth();
+                        mpAtlas->AddMapPoint(pNewMP);
+
+                        mCurrentFrame.mvpMapPoints[i] = pNewMP;
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < mCurrentFrame.Nleft; i++)
+                {
+                    int rightIndex = mCurrentFrame.mvLeftToRightMatch[i];
+                    if (rightIndex != -1)
+                    {
+                        Eigen::Vector3f x3D = mCurrentFrame.mvStereo3Dpoints[i];
+
+                        MapPoint *pNewMP = new MapPoint(x3D, pKFini, mpAtlas->GetCurrentMap());
+
+                        pNewMP->AddObservation(pKFini, i);
+                        pNewMP->AddObservation(pKFini, rightIndex + mCurrentFrame.Nleft);
+
+                        pKFini->AddMapPoint(pNewMP, i);
+                        pKFini->AddMapPoint(pNewMP, rightIndex + mCurrentFrame.Nleft);
+
+                        pNewMP->ComputeDistinctiveDescriptors();
+                        pNewMP->UpdateNormalAndDepth();
+                        mpAtlas->AddMapPoint(pNewMP);
+
+                        mCurrentFrame.mvpMapPoints[i] = pNewMP;
+                        mCurrentFrame.mvpMapPoints[rightIndex + mCurrentFrame.Nleft] = pNewMP;
+                    }
+                }
+            }
+
+            Verbose::PrintMess("New Map created with " + to_string(mpAtlas->MapPointsInMap()) + " points", Verbose::VERBOSITY_QUIET);
+
+            // cout << "Active map: " << mpAtlas->GetCurrentMap()->GetId() << endl;
+
+            mpLocalMapper->InsertKeyFrame(pKFini);
+
+            mLastFrame = Frame(mCurrentFrame);
+            mnLastKeyFrameId = mCurrentFrame.mnId;
+            mpLastKeyFrame = pKFini;
+            // mnLastRelocFrameId = mCurrentFrame.mnId;
+
+            mvpLocalKeyFrames.push_back(pKFini);
+            mvpLocalMapPoints = mpAtlas->GetAllMapPoints();
+            mpReferenceKF = pKFini;
+            mCurrentFrame.mpReferenceKF = pKFini;
+
+            mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
+
+            mpAtlas->GetCurrentMap()->mvpKeyFrameOrigins.push_back(pKFini);
+
+            mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.GetPose());
+
+            mState = OK;
+        }
+    }
+
+    void Tracking::StereoInitializationWithCurves()
+    {
+        if (mCurrentFrame.N > 500 || mCurrentFrame.NC >= 1)
+        {
+            if (mSensor == System::IMU_RGBD)
+            {
+                if (!mCurrentFrame.mpImuPreintegrated || !mLastFrame.mpImuPreintegrated)
+                {
+                    cout << "not IMU meas" << endl;
+                    return;
+                }
+
+                if (!mFastInit && (mCurrentFrame.mpImuPreintegratedFrame->avgA - mLastFrame.mpImuPreintegratedFrame->avgA).norm() < 0.5)
+                {
+                    cout << "not enough acceleration" << endl;
+                    return;
+                }
+
+                if (mpImuPreintegratedFromLastKF)
+                    delete mpImuPreintegratedFromLastKF;
+
+                mpImuPreintegratedFromLastKF = new IMU::Preintegrated(IMU::Bias(), *mpImuCalib);
+                mCurrentFrame.mpImuPreintegrated = mpImuPreintegratedFromLastKF;
+            }
+
+            // Set Frame pose to the origin (In case of inertial SLAM to imu)
+            if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+            {
+                Eigen::Matrix3f Rwb0 = mCurrentFrame.mImuCalib.mTcb.rotationMatrix();
+                Eigen::Vector3f twb0 = mCurrentFrame.mImuCalib.mTcb.translation();
+                Eigen::Vector3f Vwb0;
+                Vwb0.setZero();
+                mCurrentFrame.SetImuPoseVelocity(Rwb0, twb0, Vwb0);
+            }
+            else
+                mCurrentFrame.SetPose(Sophus::SE3f());
+
+            // Create KeyFrame
+            KeyFrame *pKFini = new KeyFrame(mCurrentFrame, mpAtlas->GetCurrentMap(), mpKeyFrameDB);
+
+            // Insert KeyFrame in the map
+            mpAtlas->AddKeyFrame(pKFini);
+
+            // Create MapPoints and asscoiate to KeyFrame
+            if (!mpCamera2)
+            {
+                for (int i = 0; i < mCurrentFrame.N; i++)
+                {
+                    float z = mCurrentFrame.mvDepth[i];
+                    if (z > 0)
+                    {
                         // 世界系下的特征点3D坐标
                         Eigen::Vector3f x3D;
                         mCurrentFrame.UnprojectStereo(i, x3D);
@@ -2496,7 +3142,7 @@ namespace ORB_SLAM3
 
                 const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
                 const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
-                for (int j = 0; j < mCurrentFrame.NB; j++)
+                for (int j = 0; j < mCurrentFrame.NC; j++)
                 {
                     vector<Eigen::Vector3f> bezier3D;
                     const BezierCurve &curve = mCurrentFrame.mvBezierCurves[j];
@@ -2513,12 +3159,12 @@ namespace ORB_SLAM3
                     if (bezier3D.size() < 2)
                         continue;
 
-                    MapBezier *pNewMB = new MapBezier(bezier3D, pKFini, mpAtlas->GetCurrentMap());
+                    MapCurve *pNewMB = new MapCurve(bezier3D, pKFini, mpAtlas->GetCurrentMap());
                     pNewMB->AddObservation(pKFini, j);
-                    pKFini->AddMapBezier(pNewMB, j);
+                    pKFini->AddMapCurve(pNewMB, j);
                     //
                     //
-                    mpAtlas->AddMapBezier(pNewMB);
+                    mpAtlas->AddMapCurve(pNewMB);
 
                     mCurrentFrame.mvpMapBeziers[j] = pNewMB;
                 }
@@ -2563,12 +3209,12 @@ namespace ORB_SLAM3
 
             mvpLocalKeyFrames.push_back(pKFini);
             mvpLocalMapPoints = mpAtlas->GetAllMapPoints();
-            mvpLocalMapBeziers = mpAtlas->GetAllMapBeziers();
+            mvpLocalMapCurves = mpAtlas->GetAllMapCurves();
             mpReferenceKF = pKFini;
             mCurrentFrame.mpReferenceKF = pKFini;
 
             mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
-            mpAtlas->SetReferenceMapBeziers(mvpLocalMapBeziers);
+            mpAtlas->SetReferenceMapCurves(mvpLocalMapCurves);
 
             mpAtlas->GetCurrentMap()->mvpKeyFrameOrigins.push_back(pKFini);
 
@@ -2840,14 +3486,31 @@ namespace ORB_SLAM3
                 }
             }
         }
+    }
 
-        for (int i = 0; i < mLastFrame.NB; i++)
+    void Tracking::CheckReplacedInLastFrameWithCurves()
+    {
+        for (int i = 0; i < mLastFrame.N; i++)
         {
-            MapBezier *pMB = mLastFrame.mvpMapBeziers[i];
+            MapPoint *pMP = mLastFrame.mvpMapPoints[i];
+
+            if (pMP)
+            {
+                MapPoint *pRep = pMP->GetReplaced();
+                if (pRep)
+                {
+                    mLastFrame.mvpMapPoints[i] = pRep;
+                }
+            }
+        }
+
+        for (int i = 0; i < mLastFrame.NC; i++)
+        {
+            MapCurve *pMB = mLastFrame.mvpMapBeziers[i];
 
             if (pMB)
             {
-                MapBezier *pRep = pMB->GetReplaced();
+                MapCurve *pRep = pMB->GetReplaced();
                 if (pRep)
                 {
                     mLastFrame.mvpMapBeziers[i] = pRep;
@@ -2877,13 +3540,6 @@ namespace ORB_SLAM3
         mCurrentFrame.mvpMapPoints = vpMapPointMatches;
         mCurrentFrame.SetPose(mLastFrame.GetPose());
 
-        BezierMatcher bezierMatcher;
-        vector<MapBezier *> vpMapBezierMatches;
-
-        int nBezierMatches = bezierMatcher.SearchByProjection(mpReferenceKF, mCurrentFrame, vpMapBezierMatches);
-        // 当前帧的第i条贝塞尔曲线对应的地图贝塞尔曲线
-        mCurrentFrame.mvpMapBeziers = vpMapBezierMatches;
-
         // mCurrentFrame.PrintPointDistribution();
 
         // cout << " TrackReferenceKeyFrame mLastFrame.mTcw:  " << mLastFrame.mTcw << endl;
@@ -2902,7 +3558,6 @@ namespace ORB_SLAM3
 
                     mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
                     mCurrentFrame.mvbOutlier[i] = false;
-                    // for stereo N = Nleft + Nright, for mono N = -1
                     if (i < mCurrentFrame.Nleft)
                     {
                         pMP->mbTrackInView = false;
@@ -2915,32 +3570,121 @@ namespace ORB_SLAM3
                     pMP->mnLastFrameSeen = mCurrentFrame.mnId;
                     nmatches--;
                 }
-                else if (mCurrentFrame.mvpMapPoints[i]->Observations())
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
                     nmatchesMap++;
             }
         }
 
+        if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+            return true;
+        else
+            return nmatchesMap >= 10;
+    }
+
+    bool Tracking::TrackReferenceKeyFrameWithCurves()
+    {
+        // Compute Bag of Words vector
+        mCurrentFrame.ComputeBoW();
+
+        // We perform first an ORB matching with the reference keyframe
+        // If enough matches are found we setup a PnP solver
+        ORBmatcher matcher(0.7, true);
+        vector<MapPoint *> vpMapPointMatches;
+
+        int nmatches = matcher.SearchByBoW(mpReferenceKF, mCurrentFrame, vpMapPointMatches);
+
+        mCurrentFrame.mvpMapPoints = vpMapPointMatches;
+        mCurrentFrame.SetPose(mLastFrame.GetPose());
+
+        // mCurrentFrame.PrintPointDistribution();
+
+        // cout << " TrackReferenceKeyFrame mLastFrame.mTcw:  " << mLastFrame.mTcw << endl;
+        BezierMatcher bezierMatcher;
+        bezierMatcher.SearchByProjection(mpReferenceKF, mCurrentFrame, mCurrentFrame.mvpMapBeziers);
+
+        // Several current-frame fragments may match the same MapCurve. Use
+        // unique map curves in the initial tracking check so edge splitting
+        // cannot artificially increase the number of observations.
+        std::unordered_set<MapCurve *> matchedMapCurves;
+        for (MapCurve *pMapCurve : mCurrentFrame.mvpMapBeziers)
+        {
+            if (pMapCurve)
+                matchedMapCurves.insert(pMapCurve);
+        }
+
+        const int nMatchedCurves = static_cast<int>(matchedMapCurves.size());
+        if (nmatches + nMatchedCurves < 15)
+        {
+            cout << "TRACK_REF_KF: Less than 15 point and curve matches!!\n";
+            return false;
+        }
+
+        Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+
+        // Discard outliers
+        int nmatchesMap = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            // if(i >= mCurrentFrame.Nleft) break;
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (mCurrentFrame.mvbOutlier[i])
+                {
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                    mCurrentFrame.mvbOutlier[i] = false;
+                    if (i < mCurrentFrame.Nleft)
+                    {
+                        pMP->mbTrackInView = false;
+                    }
+                    else
+                    {
+                        pMP->mbTrackInViewR = false;
+                    }
+                    pMP->mbTrackInView = false;
+                    pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
+        }
+
+        std::unordered_set<MapCurve *> inlierMapCurves;
         if (mCurrentFrame.mbBezierOutliersValid)
         {
-            for (int i = 0; i < mCurrentFrame.NB; i++)
+            const size_t curveCount = std::min(
+                mCurrentFrame.mvpMapBeziers.size(),
+                mCurrentFrame.mvbBezierOutlier.size());
+            for (size_t i = 0; i < curveCount; ++i)
             {
-                if (mCurrentFrame.mvpMapBeziers[i])
-                {
-                    if (mCurrentFrame.mvbBezierOutlier[i])
-                    {
-                        MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[i];
+                if (!pMapCurve)
+                    continue;
 
-                        mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
-                        mCurrentFrame.mvbBezierOutlier[i] = false;
-                        pMB->mbTrackInView = false;
-                        pMB->mnLastFrameSeen = mCurrentFrame.mnId;
-                        nBezierMatches--;
-                    }
-                    else if (mCurrentFrame.mvpMapBeziers[i]->Observations())
-                        nmatchesMap++;
+                if (mCurrentFrame.mvbBezierOutlier[i])
+                {
+                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                    mCurrentFrame.mvbBezierOutlier[i] = false;
+                    pMapCurve->mbTrackInView = false;
+                    pMapCurve->mnLastFrameSeen = mCurrentFrame.mnId;
+                }
+                else if (pMapCurve->Observations() > 0)
+                {
+                    inlierMapCurves.insert(pMapCurve);
                 }
             }
         }
+        else
+        {
+            // No valid curve outlier classification was produced. Do not use
+            // unverified curve matches in the tracking-success decision.
+            fill(mCurrentFrame.mvpMapBeziers.begin(), mCurrentFrame.mvpMapBeziers.end(), static_cast<MapCurve *>(NULL));
+            fill(mCurrentFrame.mvbBezierOutlier.begin(), mCurrentFrame.mvbBezierOutlier.end(), false);
+        }
+
+        nmatchesMap += inlierMapCurves.size();
 
         if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             return true;
@@ -3025,15 +3769,134 @@ namespace ORB_SLAM3
         }
     }
 
+    void Tracking::UpdateLastFrameWithCurves()
+    {
+        // Update pose according to reference keyframe
+        KeyFrame *pRef = mLastFrame.mpReferenceKF;
+        // 上一帧 mLastFrame 相对于其参考关键帧 pRef 的相对位姿
+        Sophus::SE3f Tlr = mlRelativeFramePoses.back();
+        mLastFrame.SetPose(Tlr * pRef->GetPose()); // T_c_r * T_r_w = T_c_w
+
+        if (mnLastKeyFrameId == mLastFrame.mnId || mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR || !mbOnlyTracking)
+        {
+            return;
+        }
+
+        // Create "visual odometry" MapPoints
+        // We sort points according to their measured depth by the stereo/RGB-D sensor
+        vector<pair<float, int>> vDepthIdx;
+        const int Nfeat = mLastFrame.Nleft == -1 ? mLastFrame.N : mLastFrame.Nleft;
+        vDepthIdx.reserve(Nfeat);
+        for (int i = 0; i < Nfeat; i++)
+        {
+            float z = mLastFrame.mvDepth[i];
+            if (z > 0)
+            {
+                vDepthIdx.push_back(make_pair(z, i));
+            }
+        }
+
+        sort(vDepthIdx.begin(), vDepthIdx.end());
+
+        // We insert all close points (depth<mThDepth)
+        // If less than 100 close points, we insert the 100 closest ones.
+        int nPoints = 0;
+        for (size_t j = 0; j < vDepthIdx.size(); j++)
+        {
+            int i = vDepthIdx[j].second;
+
+            bool bCreateNew = false;
+
+            MapPoint *pMP = mLastFrame.mvpMapPoints[i];
+
+            if (!pMP)
+                bCreateNew = true;
+            else if (pMP->Observations() < 1)
+                bCreateNew = true;
+
+            if (bCreateNew)
+            {
+                Eigen::Vector3f x3D;
+
+                if (mLastFrame.Nleft == -1)
+                {
+                    mLastFrame.UnprojectStereo(i, x3D);
+                }
+                else
+                {
+                    x3D = mLastFrame.UnprojectStereoFishEye(i);
+                }
+
+                MapPoint *pNewMP = new MapPoint(x3D, mpAtlas->GetCurrentMap(), &mLastFrame, i);
+                mLastFrame.mvpMapPoints[i] = pNewMP;
+
+                mlpTemporalPoints.push_back(pNewMP);
+                nPoints++;
+            }
+            else
+            {
+                nPoints++;
+            }
+
+            if (vDepthIdx[j].first > mThDepth && nPoints > 100)
+                break;
+        }
+
+        // Create temporary visual-odometry curves from the valid depth
+        // samples of the last frame. They are not inserted into the map and
+        // therefore keep zero KeyFrame observations.
+        const Eigen::Matrix3f Rwc = mLastFrame.GetRotationInverse();
+        const Eigen::Vector3f Ow = mLastFrame.GetCameraCenter();
+        const size_t curveCount = std::min(
+            mLastFrame.mvBezierCurves.size(),
+            mLastFrame.mvpMapBeziers.size());
+
+        for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
+        {
+            MapCurve *pMapCurve = mLastFrame.mvpMapBeziers[curveIndex];
+            if (pMapCurve && pMapCurve->Observations() > 0)
+                continue;
+
+            const BezierCurve &curve = mLastFrame.mvBezierCurves[curveIndex];
+            const size_t sampleCount = std::min(
+                curve.sampledPoints.size(), curve.depths.size());
+            std::vector<Eigen::Vector3f> worldPoints;
+            worldPoints.reserve(sampleCount);
+
+            for (size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+            {
+                const float depth = curve.depths[sampleIndex];
+                if (!std::isfinite(depth) || depth <= 0.0f)
+                    continue;
+
+                const Eigen::Vector2f &sample = curve.sampledPoints[sampleIndex];
+                Eigen::Vector3f cameraPoint = mLastFrame.mpCamera->unprojectEig(
+                    cv::Point2f(sample.x(), sample.y()));
+                if (!cameraPoint.allFinite() || std::fabs(cameraPoint.z()) <= 1e-6f)
+                    continue;
+
+                cameraPoint *= depth / cameraPoint.z();
+                worldPoints.push_back(Rwc * cameraPoint + Ow);
+            }
+
+            if (worldPoints.size() < 3)
+                continue;
+
+            MapCurve *pNewMapCurve = new MapCurve(
+                worldPoints, mpAtlas->GetCurrentMap(), &mLastFrame);
+            mLastFrame.mvpMapBeziers[curveIndex] = pNewMapCurve;
+            mlpTemporalCurves.push_back(pNewMapCurve);
+        }
+    }
+
     // 两种位姿更新方式：IMU预测和常速模型预测
     bool Tracking::TrackWithMotionModel()
     {
         ORBmatcher matcher(0.9, true);
-        BezierMatcher bezierMatcher;
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
-        UpdateLastFrame(); // 更新上一帧的位姿
+        UpdateLastFrame();
 
         if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
         {
@@ -3047,7 +3910,6 @@ namespace ORB_SLAM3
         }
 
         fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
-        fill(mCurrentFrame.mvpMapBeziers.begin(), mCurrentFrame.mvpMapBeziers.end(), static_cast<MapBezier *>(NULL));
 
         // Project points seen in previous frame
         int th;
@@ -3058,10 +3920,9 @@ namespace ORB_SLAM3
             th = 15;
 
         int nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
-        int nBezierMatches = bezierMatcher.SearchByProjection(mCurrentFrame, mLastFrame);
 
         // If few matches, uses a wider window search
-        if (nmatches < 20 || nBezierMatches < 1)
+        if (nmatches < 20)
         {
             Verbose::PrintMess("Not enough matches, wider window search!!", Verbose::VERBOSITY_NORMAL);
             fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
@@ -3070,7 +3931,7 @@ namespace ORB_SLAM3
             Verbose::PrintMess("Matches with wider search: " + to_string(nmatches), Verbose::VERBOSITY_NORMAL);
         }
 
-        if (nmatches < 20 || nBezierMatches < 1)
+        if (nmatches < 20)
         {
             Verbose::PrintMess("Not enough matches!!", Verbose::VERBOSITY_NORMAL);
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
@@ -3110,33 +3971,6 @@ namespace ORB_SLAM3
             }
         }
 
-        // Bezier matches participate in pose optimization as independent curve
-        // observations. Remove rejected fragments after optimization, just as for
-        // point matches. The same MapBezier may legitimately remain in several
-        // current-frame slots when a long edge is split into short fragments.
-        if (mCurrentFrame.mbBezierOutliersValid)
-        {
-            for (int i = 0; i < mCurrentFrame.NB; ++i)
-            {
-                MapBezier *pMapBezier = mCurrentFrame.mvpMapBeziers[i];
-                if (!pMapBezier)
-                    continue;
-
-                if (mCurrentFrame.mvbBezierOutlier[i])
-                {
-                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
-                    mCurrentFrame.mvbBezierOutlier[i] = false;
-                    pMapBezier->mbTrackInView = false;
-                    pMapBezier->mnLastFrameSeen = mCurrentFrame.mnId;
-                    --nBezierMatches;
-                }
-                else if (pMapBezier->Observations() > 0)
-                {
-                    ++nmatchesMap;
-                }
-            }
-        }
-
         if (mbOnlyTracking)
         {
             mbVO = nmatchesMap < 10;
@@ -3149,18 +3983,171 @@ namespace ORB_SLAM3
             return nmatchesMap >= 10;
     }
 
+    bool Tracking::TrackWithMotionModelWithCurves()
+    {
+        ORBmatcher matcher(0.9, true);
+        BezierMatcher curveMatcher;
+
+        // Update last frame pose according to its reference keyframe
+        // Create "visual odometry" points if in Localization Mode
+        UpdateLastFrameWithCurves();
+
+        if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
+        {
+            // Predict state with IMU if it is initialized and it doesnt need reset
+            PredictStateIMU();
+            return true;
+        }
+        else
+        {
+            mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
+        }
+
+        fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
+        fill(mCurrentFrame.mvpMapBeziers.begin(), mCurrentFrame.mvpMapBeziers.end(), static_cast<MapCurve *>(NULL));
+
+        // Project points seen in previous frame
+        int th;
+
+        if (mSensor == System::STEREO)
+            th = 7;
+        else
+            th = 15;
+
+        int nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
+
+        // If few matches, uses a wider window search
+        if (nmatches < 20)
+        {
+            Verbose::PrintMess("Not enough matches, wider window search!!", Verbose::VERBOSITY_NORMAL);
+            fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
+
+            nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, 2 * th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
+            Verbose::PrintMess("Matches with wider search: " + to_string(nmatches), Verbose::VERBOSITY_NORMAL);
+        }
+
+        curveMatcher.SearchByProjection(mCurrentFrame, mLastFrame);
+
+        // A long map curve may be split into several image fragments. Count
+        // every MapCurve only once when deciding whether there are enough
+        // observations to optimize the current pose.
+        std::unordered_set<MapCurve *> matchedMapCurves;
+        for (MapCurve *pMapCurve : mCurrentFrame.mvpMapBeziers)
+        {
+            if (pMapCurve)
+                matchedMapCurves.insert(pMapCurve);
+        }
+
+        const size_t nMatchedCurves = matchedMapCurves.size();
+        if (nmatches + nMatchedCurves < 20)
+        {
+            Verbose::PrintMess("Not enough matches!!", Verbose::VERBOSITY_NORMAL);
+            if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                return true;
+            else
+                return false;
+        }
+
+        // Optimize frame pose with all matches
+        const int nOptimizationInliers = Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+
+        // Discard outliers
+        int nmatchesMap = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (mCurrentFrame.mvbOutlier[i])
+                {
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                    mCurrentFrame.mvbOutlier[i] = false;
+                    if (i < mCurrentFrame.Nleft)
+                    {
+                        pMP->mbTrackInView = false;
+                    }
+                    else
+                    {
+                        pMP->mbTrackInViewR = false;
+                    }
+                    pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
+        }
+
+        std::unordered_set<MapCurve *> inlierMapCurves;
+        std::unordered_set<MapCurve *> inlierCurves;
+        if (mCurrentFrame.mbBezierOutliersValid)
+        {
+            const size_t curveCount = std::min(
+                mCurrentFrame.mvpMapBeziers.size(),
+                mCurrentFrame.mvbBezierOutlier.size());
+            for (size_t i = 0; i < curveCount; ++i)
+            {
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[i];
+                if (!pMapCurve)
+                    continue;
+
+                if (mCurrentFrame.mvbBezierOutlier[i])
+                {
+                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                    mCurrentFrame.mvbBezierOutlier[i] = false;
+                    pMapCurve->mbTrackInView = false;
+                    pMapCurve->mnLastFrameSeen = mCurrentFrame.mnId;
+                }
+                else
+                {
+                    inlierCurves.insert(pMapCurve);
+                    if (pMapCurve->Observations() > 0)
+                        inlierMapCurves.insert(pMapCurve);
+                }
+            }
+        }
+        else
+        {
+            // The optimizer did not produce valid curve outlier decisions.
+            // Do not keep or count unverified curve matches.
+            fill(mCurrentFrame.mvpMapBeziers.begin(), mCurrentFrame.mvpMapBeziers.end(), static_cast<MapCurve *>(NULL));
+            fill(mCurrentFrame.mvbBezierOutlier.begin(), mCurrentFrame.mvbBezierOutlier.end(), false);
+        }
+
+        nmatchesMap += static_cast<int>(inlierMapCurves.size());
+        const int nTotalInlierMatches = nmatches + static_cast<int>(inlierCurves.size());
+
+        if (mbOnlyTracking)
+        {
+            mbVO = nmatchesMap < 10;
+            return nOptimizationInliers > 0 && nTotalInlierMatches > 20;
+        }
+
+        if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+            return true;
+        else
+            return nOptimizationInliers > 0 && nmatchesMap >= 10;
+    }
+
     bool Tracking::TrackLocalMap()
     {
-
         // We have an estimation of the camera pose and some map points tracked in the frame.
         // We retrieve the local map and try to find matches to points in the local map.
         mTrackedFr++;
 
         UpdateLocalMap();
-        thread threadPoints(&Tracking::SearchLocalPoints, this);
-        thread threadBezier(&Tracking::SearchLocalBeziers, this);
-        threadPoints.join();
-        threadBezier.join();
+        SearchLocalPoints();
+
+        // TOO check outliers before PO
+        int aux1 = 0, aux2 = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                aux1++;
+                if (mCurrentFrame.mvbOutlier[i])
+                    aux2++;
+            }
 
         int inliers;
         if (!mpAtlas->isImuInitialized())
@@ -3188,6 +4175,15 @@ namespace ORB_SLAM3
             }
         }
 
+        aux1 = 0, aux2 = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                aux1++;
+                if (mCurrentFrame.mvbOutlier[i])
+                    aux2++;
+            }
+
         mnMatchesInliers = 0;
 
         // Update MapPoints Statistics
@@ -3211,26 +4207,150 @@ namespace ORB_SLAM3
             }
         }
 
-        if (mCurrentFrame.mbBezierOutliersValid)
+        // Decide if the tracking was succesful
+        // More restrictive if there was a relocalization recently
+        mpLocalMapper->mnMatchesInliers = mnMatchesInliers;
+        if (mCurrentFrame.mnId < mnLastRelocFrameId + mMaxFrames && mnMatchesInliers < 50)
+            return false;
+
+        if ((mnMatchesInliers > 10) && (mState == RECENTLY_LOST))
+            return true;
+
+        if (mSensor == System::IMU_MONOCULAR)
         {
-            for (int i = 0; i < mCurrentFrame.NB; i++)
+            if ((mnMatchesInliers < 15 && mpAtlas->isImuInitialized()) || (mnMatchesInliers < 50 && !mpAtlas->isImuInitialized()))
             {
-                if (mCurrentFrame.mvpMapBeziers[i])
+                return false;
+            }
+            else
+                return true;
+        }
+        else if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+        {
+            if (mnMatchesInliers < 15)
+            {
+                return false;
+            }
+            else
+                return true;
+        }
+        else
+        {
+            if (mnMatchesInliers < 30)
+                return false;
+            else
+                return true;
+        }
+    }
+
+    bool Tracking::TrackLocalMapWithCurves()
+    {
+        // We have an estimation of the camera pose and some map points and
+        // curves tracked in the frame. Retrieve the local map and search for
+        // additional point and curve observations.
+        mTrackedFr++;
+
+        UpdateLocalMapWithCurves();
+        thread threadPoints(&Tracking::SearchLocalPoints, this);
+        thread threadBezier(&Tracking::SearchLocalCurves, this);
+        threadPoints.join();
+        threadBezier.join();
+
+        if (!mpAtlas->isImuInitialized())
+            Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+        else
+        {
+            if (mCurrentFrame.mnId <= mnLastRelocFrameId + mnFramesToResetIMU)
+            {
+                Verbose::PrintMess("TLM: PoseOptimizationWithCurves ", Verbose::VERBOSITY_DEBUG);
+                Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+            }
+            else
+            {
+                if (!mbMapUpdated)
                 {
-                    if (!mCurrentFrame.mvbBezierOutlier[i])
-                    {
-                        mCurrentFrame.mvpMapBeziers[i]->IncreaseFound();
-                        if (!mbOnlyTracking)
-                        {
-                            if (mCurrentFrame.mvpMapBeziers[i]->Observations() > 0)
-                                mnMatchesInliers++;
-                        }
-                        else
-                            mnMatchesInliers++;
-                    }
+                    Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrameWithCurve ", Verbose::VERBOSITY_DEBUG);
+                    Optimizer::PoseInertialOptimizationLastFrameWithCurve(&mCurrentFrame);
+                }
+                else
+                {
+                    Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrameWithCurve ", Verbose::VERBOSITY_DEBUG);
+                    Optimizer::PoseInertialOptimizationLastKeyFrameWithCurve(&mCurrentFrame);
                 }
             }
         }
+
+        int nPointInliers = 0;
+
+        // Update MapPoints Statistics
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (!mCurrentFrame.mvbOutlier[i])
+                {
+                    mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
+                    if (!mbOnlyTracking)
+                    {
+                        if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                            nPointInliers++;
+                    }
+                    else
+                        nPointInliers++;
+                }
+                else if (mSensor == System::STEREO)
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+            }
+        }
+
+        // Several 2D fragments can observe the same MapCurve. Update its
+        // statistics and count it only once so fragmentation cannot inflate
+        // the tracking score.
+        std::unordered_set<MapCurve *> inlierCurves;
+        std::unordered_set<MapCurve *> inlierMapCurves;
+        if (mCurrentFrame.mbBezierOutliersValid)
+        {
+            const size_t curveCount = std::min(
+                static_cast<size_t>(std::max(0, mCurrentFrame.NC)),
+                std::min(mCurrentFrame.mvpMapBeziers.size(),
+                         mCurrentFrame.mvbBezierOutlier.size()));
+
+            for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
+            {
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[curveIndex];
+                if (!pMapCurve)
+                    continue;
+
+                if (mCurrentFrame.mvbBezierOutlier[curveIndex])
+                {
+                    pMapCurve->mbTrackInView = false;
+                    if (mSensor == System::STEREO)
+                        mCurrentFrame.mvpMapBeziers[curveIndex] = static_cast<MapCurve *>(NULL);
+                    continue;
+                }
+
+                inlierCurves.insert(pMapCurve);
+                if (pMapCurve->Observations() > 0)
+                    inlierMapCurves.insert(pMapCurve);
+            }
+
+            for (MapCurve *pMapCurve : inlierCurves)
+                pMapCurve->IncreaseFound();
+        }
+        else
+        {
+            // Curve matches without an optimizer decision must not be reused
+            // by the next frame or contribute to the success decision.
+            fill(mCurrentFrame.mvpMapBeziers.begin(),
+                 mCurrentFrame.mvpMapBeziers.end(), static_cast<MapCurve *>(NULL));
+            fill(mCurrentFrame.mvbBezierOutlier.begin(),
+                 mCurrentFrame.mvbBezierOutlier.end(), false);
+        }
+
+        const int nCurveInliers = mbOnlyTracking
+                                      ? static_cast<int>(inlierCurves.size())
+                                      : static_cast<int>(inlierMapCurves.size());
+        mnMatchesInliers = nPointInliers + nCurveInliers;
 
         // Decide if the tracking was succesful
         // More restrictive if there was a relocalization recently
@@ -3421,6 +4541,334 @@ namespace ORB_SLAM3
             return false;
     }
 
+    bool Tracking::NeedNewKeyFrameWithCurves()
+    {
+        if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mpAtlas->GetCurrentMap()->isImuInitialized())
+        {
+            if (mpLastKeyFrame && (mCurrentFrame.mTimeStamp - mpLastKeyFrame->mTimeStamp) >= 0.25)
+                return true;
+            else
+                return false;
+        }
+
+        if (mbOnlyTracking)
+            return false;
+
+        // If Local Mapping is freezed by a Loop Closure do not insert keyframes
+        if (mpLocalMapper->isStopped() || mpLocalMapper->stopRequested())
+            return false;
+
+        const int nKFs = mpAtlas->KeyFramesInMap();
+
+        // Do not insert keyframes if not enough frames have passed from last relocalisation
+        if (mCurrentFrame.mnId < mnLastRelocFrameId + mMaxFrames && nKFs > mMaxFrames)
+            return false;
+
+        int nMinObs = 3;
+        if (nKFs <= 2)
+            nMinObs = 2;
+
+        // Tracked MapPoints in the reference keyframe
+        const int nRefMatches = mpReferenceKF
+                                    ? mpReferenceKF->TrackedMapPoints(nMinObs)
+                                    : 0;
+
+        // Count point inliers separately. mnMatchesInliers also contains
+        // unique curve inliers in the curve tracking path.
+        int nPointInliers = 0;
+        const size_t pointCount = std::min(
+            static_cast<size_t>(std::max(0, mCurrentFrame.N)),
+            std::min(mCurrentFrame.mvpMapPoints.size(),
+                     mCurrentFrame.mvbOutlier.size()));
+        for (size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+        {
+            MapPoint *pMapPoint = mCurrentFrame.mvpMapPoints[pointIndex];
+            if (pMapPoint && !mCurrentFrame.mvbOutlier[pointIndex] &&
+                !pMapPoint->isBad() && pMapPoint->Observations() > 0)
+            {
+                ++nPointInliers;
+            }
+        }
+
+        // Count every persistent MapCurve only once. Several 2D Bezier
+        // fragments may observe the same map curve.
+        std::unordered_set<MapCurve *> referenceMapCurves;
+        if (mpReferenceKF)
+        {
+            const std::vector<MapCurve *> referenceMatches =
+                mpReferenceKF->GetMapCurveMatches();
+            for (MapCurve *pMapCurve : referenceMatches)
+            {
+                if (pMapCurve && !pMapCurve->isBad() &&
+                    pMapCurve->Observations() >= nMinObs)
+                {
+                    referenceMapCurves.insert(pMapCurve);
+                }
+            }
+        }
+
+        std::unordered_set<MapCurve *> currentMapCurves;
+        const size_t curveCount = std::min(
+            static_cast<size_t>(std::max(0, mCurrentFrame.NC)),
+            std::min(mCurrentFrame.mvBezierCurves.size(),
+                     mCurrentFrame.mvpMapBeziers.size()));
+        if (mCurrentFrame.mbBezierOutliersValid)
+        {
+            const size_t classifiedCurveCount = std::min(
+                curveCount, mCurrentFrame.mvbBezierOutlier.size());
+            for (size_t curveIndex = 0;
+                 curveIndex < classifiedCurveCount; ++curveIndex)
+            {
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[curveIndex];
+                if (pMapCurve && !mCurrentFrame.mvbBezierOutlier[curveIndex] &&
+                    !pMapCurve->isBad() && pMapCurve->Observations() > 0)
+                {
+                    currentMapCurves.insert(pMapCurve);
+                }
+            }
+        }
+
+        // Count new depth-supported physical edges. Adaptive fitting can split
+        // one extracted edge into several Bezier curves, so edge_ID is used to
+        // prevent fragmentation from inflating this number.
+        std::unordered_set<int> newCurveEdgeIds;
+        std::unordered_set<int> newCurveGridCells;
+        std::unordered_set<int> newCurveDirectionBins;
+        int nNewCurvesWithoutEdgeId = 0;
+        const bool bCanCreateMapCurves =
+            mSensor != System::MONOCULAR &&
+            mSensor != System::IMU_MONOCULAR;
+        if (bCanCreateMapCurves)
+        {
+            constexpr float minNewCurveLength = 20.0f;
+            constexpr int imageGridCols = 3;
+            constexpr int imageGridRows = 3;
+            constexpr int directionBinCount = 6;
+            constexpr float pi = 3.14159265358979323846f;
+
+            for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
+            {
+                const bool bOutlier = mCurrentFrame.mbBezierOutliersValid &&
+                                      curveIndex < mCurrentFrame.mvbBezierOutlier.size() &&
+                                      mCurrentFrame.mvbBezierOutlier[curveIndex];
+                if (bOutlier)
+                    continue;
+
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[curveIndex];
+                if (pMapCurve && !pMapCurve->isBad() &&
+                    pMapCurve->Observations() > 0)
+                {
+                    continue;
+                }
+
+                const BezierCurve &curve =
+                    mCurrentFrame.mvBezierCurves[curveIndex];
+                const size_t sampleCount = std::min(
+                    curve.sampledPoints.size(), curve.depths.size());
+                if (sampleCount < 3)
+                    continue;
+
+                size_t validDepthCount = 0;
+                float curveLength = 0.0f;
+                for (size_t sampleIndex = 0;
+                     sampleIndex < sampleCount; ++sampleIndex)
+                {
+                    const float depth = curve.depths[sampleIndex];
+                    if (std::isfinite(depth) && depth > 0.02f && depth < 5.0f)
+                        ++validDepthCount;
+
+                    if (sampleIndex > 0)
+                    {
+                        curveLength +=
+                            (curve.sampledPoints[sampleIndex] -
+                             curve.sampledPoints[sampleIndex - 1])
+                                .norm();
+                    }
+                }
+
+                const float validDepthRatio = static_cast<float>(validDepthCount) /
+                                              static_cast<float>(sampleCount);
+                if (validDepthCount < 3 || validDepthRatio < 0.5f ||
+                    curveLength < minNewCurveLength)
+                {
+                    continue;
+                }
+
+                if (curve.edge_ID >= 0)
+                    newCurveEdgeIds.insert(curve.edge_ID);
+                else
+                    ++nNewCurvesWithoutEdgeId;
+
+                const Eigen::Vector2f middlePoint =
+                    curve.sampledPoints[sampleCount / 2];
+                const float imageWidth = mCurrentFrame.mnMaxX - mCurrentFrame.mnMinX;
+                const float imageHeight = mCurrentFrame.mnMaxY - mCurrentFrame.mnMinY;
+                if (imageWidth > 0.0f && imageHeight > 0.0f &&
+                    middlePoint.allFinite())
+                {
+                    const int gridX = std::max(
+                        0, std::min(imageGridCols - 1,
+                                    static_cast<int>(imageGridCols *
+                                                     (middlePoint.x() - mCurrentFrame.mnMinX) /
+                                                     imageWidth)));
+                    const int gridY = std::max(
+                        0, std::min(imageGridRows - 1,
+                                    static_cast<int>(imageGridRows *
+                                                     (middlePoint.y() - mCurrentFrame.mnMinY) /
+                                                     imageHeight)));
+                    newCurveGridCells.insert(gridY * imageGridCols + gridX);
+                }
+
+                Eigen::Vector2f direction =
+                    curve.sampledPoints[sampleCount - 1] -
+                    curve.sampledPoints.front();
+                if (direction.squaredNorm() > 1e-6f)
+                {
+                    float angle = std::atan2(direction.y(), direction.x());
+                    if (angle < 0.0f)
+                        angle += pi;
+                    if (angle >= pi)
+                        angle -= pi;
+                    const int directionBin = std::min(
+                        directionBinCount - 1,
+                        static_cast<int>(directionBinCount * angle / pi));
+                    newCurveDirectionBins.insert(directionBin);
+                }
+            }
+        }
+
+        const int nRefCurves = static_cast<int>(referenceMapCurves.size());
+        const int nCurrentCurveInliers =
+            static_cast<int>(currentMapCurves.size());
+        const int nNewValidCurves =
+            static_cast<int>(newCurveEdgeIds.size()) +
+            nNewCurvesWithoutEdgeId;
+        const bool bNewCurveCoverageValid =
+            newCurveGridCells.size() >= 2 ||
+            newCurveDirectionBins.size() >= 2;
+
+        // Local Mapping accept keyframes?
+        const bool bLocalMappingIdle = mpLocalMapper->AcceptKeyFrames();
+
+        // Check how many "close" points are being tracked and how many could be potentially created.
+        int nNonTrackedClose = 0;
+        int nTrackedClose = 0;
+        if (mSensor != System::MONOCULAR && mSensor != System::IMU_MONOCULAR)
+        {
+            const int N = (mCurrentFrame.Nleft == -1)
+                              ? mCurrentFrame.N
+                              : mCurrentFrame.Nleft;
+            const size_t closePointCount = std::min(
+                static_cast<size_t>(std::max(0, N)),
+                std::min(mCurrentFrame.mvDepth.size(),
+                         std::min(mCurrentFrame.mvpMapPoints.size(),
+                                  mCurrentFrame.mvbOutlier.size())));
+            for (size_t i = 0; i < closePointCount; ++i)
+            {
+                if (mCurrentFrame.mvDepth[i] > 0 &&
+                    mCurrentFrame.mvDepth[i] < mThDepth)
+                {
+                    if (mCurrentFrame.mvpMapPoints[i] &&
+                        !mCurrentFrame.mvbOutlier[i])
+                    {
+                        ++nTrackedClose;
+                    }
+                    else
+                        ++nNonTrackedClose;
+                }
+            }
+        }
+
+        const bool bNeedToInsertClose =
+            nTrackedClose < 100 && nNonTrackedClose > 70;
+
+        float thRefRatio = 0.75f;
+        if (nKFs < 2)
+            thRefRatio = 0.4f;
+        if (mSensor == System::MONOCULAR)
+            thRefRatio = 0.9f;
+        if (mpCamera2)
+            thRefRatio = 0.75f;
+        if (mSensor == System::IMU_MONOCULAR)
+        {
+            if (nPointInliers > 350)
+                thRefRatio = 0.75f;
+            else
+                thRefRatio = 0.90f;
+        }
+
+        const bool c1a =
+            mCurrentFrame.mnId >= mnLastKeyFrameId + mMaxFrames;
+        const bool c1b =
+            mCurrentFrame.mnId >= mnLastKeyFrameId + mMinFrames &&
+            bLocalMappingIdle;
+        const bool c1c =
+            mSensor != System::MONOCULAR &&
+            mSensor != System::IMU_MONOCULAR &&
+            mSensor != System::IMU_STEREO &&
+            mSensor != System::IMU_RGBD &&
+            (nPointInliers < nRefMatches * 0.25f || bNeedToInsertClose);
+        const bool c2 =
+            (nPointInliers < nRefMatches * thRefRatio ||
+             bNeedToInsertClose) &&
+            nPointInliers > 15;
+
+        const bool cCurveWeak =
+            nRefCurves >= 4 &&
+            nCurrentCurveInliers >= 2 &&
+            nCurrentCurveInliers < 0.6f * nRefCurves;
+        const bool cCurveNew =
+            nNewValidCurves >= 3 && bNewCurveCoverageValid;
+        const bool cCurve =
+            (c1a || c1b) && (cCurveWeak || cCurveNew);
+
+        bool c3 = false;
+        if (mpLastKeyFrame &&
+            (mSensor == System::IMU_MONOCULAR ||
+             mSensor == System::IMU_STEREO ||
+             mSensor == System::IMU_RGBD) &&
+            (mCurrentFrame.mTimeStamp - mpLastKeyFrame->mTimeStamp) >= 0.5)
+        {
+            c3 = true;
+        }
+
+        const bool c4 =
+            (((nPointInliers < 75) && (nPointInliers > 15)) ||
+             mState == RECENTLY_LOST) &&
+            mSensor == System::IMU_MONOCULAR;
+
+        // std::cout << "NeedNewKFWithCurves: points=" << nPointInliers
+        //           << "; refCurves=" << nRefCurves
+        //           << "; curveInliers=" << nCurrentCurveInliers
+        //           << "; newCurves=" << nNewValidCurves
+        //           << "; cCurveWeak=" << cCurveWeak
+        //           << "; cCurveNew=" << cCurveNew << std::endl;
+
+        if (((c1a || c1b || c1c) && c2) || cCurve || c3 || c4)
+        {
+            if (bLocalMappingIdle || mpLocalMapper->IsInitializing())
+            {
+                return true;
+            }
+            else
+            {
+                mpLocalMapper->InterruptBA();
+                if (mSensor != System::MONOCULAR &&
+                    mSensor != System::IMU_MONOCULAR)
+                {
+                    if (mpLocalMapper->KeyframesInQueue() < 3)
+                        return true;
+                    else
+                        return false;
+                }
+                else
+                    return false;
+            }
+        }
+        else
+            return false;
+    }
+
     void Tracking::CreateNewKeyFrame()
     {
         if (mpLocalMapper->IsInitializing() && !mpAtlas->isImuInitialized())
@@ -3541,56 +4989,213 @@ namespace ORB_SLAM3
                 // Verbose::PrintMess("new mps for stereo KF: " + to_string(nPoints), Verbose::VERBOSITY_NORMAL);
             }
 
-            int nBeziers = 0;
-            int maxBezier = 200;
-            for (int i = 0; i < mCurrentFrame.NB; ++i)
+        }
+
+        mpLocalMapper->InsertKeyFrame(pKF);
+
+        mpLocalMapper->SetNotStop(false);
+
+        mnLastKeyFrameId = mCurrentFrame.mnId;
+        mpLastKeyFrame = pKF;
+    }
+
+    void Tracking::CreateNewKeyFrameWithCurves()
+    {
+        if (mpLocalMapper->IsInitializing() && !mpAtlas->isImuInitialized())
+            return;
+
+        if (!mpLocalMapper->SetNotStop(true))
+            return;
+
+        KeyFrame *pKF = new KeyFrame(mCurrentFrame, mpAtlas->GetCurrentMap(), mpKeyFrameDB);
+
+        if (mpAtlas->isImuInitialized()) //  || mpLocalMapper->IsInitializing())
+            pKF->bImu = true;
+
+        pKF->SetNewBias(mCurrentFrame.mImuBias);
+        mpReferenceKF = pKF;
+        mCurrentFrame.mpReferenceKF = pKF;
+
+        if (mpLastKeyFrame)
+        {
+            pKF->mPrevKF = mpLastKeyFrame;
+            mpLastKeyFrame->mNextKF = pKF;
+        }
+        else
+            Verbose::PrintMess("No last KF in KF creation!!", Verbose::VERBOSITY_NORMAL);
+
+        // Reset preintegration from last KF (Create new object)
+        if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+        {
+            mpImuPreintegratedFromLastKF = new IMU::Preintegrated(pKF->GetImuBias(), pKF->mImuCalib);
+        }
+
+        if (mSensor != System::MONOCULAR && mSensor != System::IMU_MONOCULAR) // TODO check if incluide imu_stereo
+        {
+            mCurrentFrame.UpdatePoseMatrices();
+            // cout << "create new MPs" << endl;
+            // We sort points by the measured depth by the stereo/RGBD sensor.
+            // We create all those MapPoints whose depth < mThDepth.
+            // If there are less than 100 close points we create the 100 closest.
+            int maxPoint = 100;
+            if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+                maxPoint = 100;
+
+            vector<pair<float, int>> vDepthIdx;
+            int N = (mCurrentFrame.Nleft != -1) ? mCurrentFrame.Nleft : mCurrentFrame.N;
+            vDepthIdx.reserve(mCurrentFrame.N);
+            for (int i = 0; i < N; i++)
             {
-                bool bCreateNew = false;
-
-                MapBezier *pMB = mCurrentFrame.mvpMapBeziers[i];
-                if (!pMB)
-                    bCreateNew = true;
-                else if (pMB->Observations() < 1)
+                float z = mCurrentFrame.mvDepth[i];
+                if (z > 0)
                 {
-                    bCreateNew = true;
-                    mCurrentFrame.mvpMapBeziers[i] = static_cast<MapBezier *>(NULL);
+                    vDepthIdx.push_back(make_pair(z, i));
                 }
+            }
 
-                const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
-                const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
-                if (bCreateNew)
+            if (!vDepthIdx.empty())
+            {
+                sort(vDepthIdx.begin(), vDepthIdx.end());
+
+                int nPoints = 0;
+                for (size_t j = 0; j < vDepthIdx.size(); j++)
                 {
-                    vector<Eigen::Vector3f> bezier3D;
-                    const BezierCurve &curve = mCurrentFrame.mvBezierCurves[i];
-                    for (int k = 0; k < curve.sampledPoints.size(); k++)
+                    int i = vDepthIdx[j].second;
+
+                    bool bCreateNew = false;
+
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+                    if (!pMP)
+                        bCreateNew = true;
+                    else if (pMP->Observations() < 1)
                     {
-                        Eigen::Vector3f pc;
-                        assert(curve.sampledPoints.size() == curve.depths.size());
-                        float depth = curve.depths[k];
-                        float x3d = depth * mCurrentFrame.invfx * (curve.sampledPoints[k].x() - mCurrentFrame.cx);
-                        float y3d = depth * mCurrentFrame.invfy * (curve.sampledPoints[k].y() - mCurrentFrame.cy);
-                        pc << x3d, y3d, depth;
-                        bezier3D.push_back(Rwc * pc + Ow);
+                        bCreateNew = true;
+                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
                     }
 
-                    MapBezier *pNewMB = new MapBezier(bezier3D, pKF, mpAtlas->GetCurrentMap());
-                    pNewMB->AddObservation(pKF, i);
-                    pKF->AddMapBezier(pNewMB, i);
-                    // pKF->mvBezierCurves = mCurrentFrame.mvBezierCurves;
-                    //
-                    //
-                    mpAtlas->AddMapBezier(pNewMB);
+                    if (bCreateNew)
+                    {
+                        Eigen::Vector3f x3D;
 
-                    mCurrentFrame.mvpMapBeziers[i] = pNewMB;
-                    nBeziers++;
+                        if (mCurrentFrame.Nleft == -1)
+                        {
+                            mCurrentFrame.UnprojectStereo(i, x3D);
+                        }
+                        else
+                        {
+                            x3D = mCurrentFrame.UnprojectStereoFishEye(i);
+                        }
+
+                        MapPoint *pNewMP = new MapPoint(x3D, pKF, mpAtlas->GetCurrentMap());
+                        pNewMP->AddObservation(pKF, i);
+
+                        // Check if it is a stereo observation in order to not
+                        // duplicate mappoints
+                        if (mCurrentFrame.Nleft != -1 && mCurrentFrame.mvLeftToRightMatch[i] >= 0)
+                        {
+                            mCurrentFrame.mvpMapPoints[mCurrentFrame.Nleft + mCurrentFrame.mvLeftToRightMatch[i]] = pNewMP;
+                            pNewMP->AddObservation(pKF, mCurrentFrame.Nleft + mCurrentFrame.mvLeftToRightMatch[i]);
+                            pKF->AddMapPoint(pNewMP, mCurrentFrame.Nleft + mCurrentFrame.mvLeftToRightMatch[i]);
+                        }
+
+                        pKF->AddMapPoint(pNewMP, i);
+                        pNewMP->ComputeDistinctiveDescriptors();
+                        pNewMP->UpdateNormalAndDepth();
+                        mpAtlas->AddMapPoint(pNewMP);
+
+                        mCurrentFrame.mvpMapPoints[i] = pNewMP;
+                        nPoints++;
+                    }
+                    else
+                    {
+                        nPoints++;
+                    }
+
+                    if (vDepthIdx[j].first > mThDepth && nPoints > maxPoint)
+                    {
+                        break;
+                    }
                 }
-                else
+                // Verbose::PrintMess("new mps for stereo KF: " + to_string(nPoints), Verbose::VERBOSITY_NORMAL);
+            }
+            // Create permanent MapCurves from current-frame curves that are
+            // not already associated with an observed map curve. Curves are
+            // extracted from the left image, so their depth samples are
+            // unprojected with the left camera model.
+            const Eigen::Matrix3f Rwc = mCurrentFrame.GetRotationInverse();
+            const Eigen::Vector3f Ow = mCurrentFrame.GetCameraCenter();
+            const size_t curveCount = std::min(
+                static_cast<size_t>(std::max(0, mCurrentFrame.NC)),
+                std::min(mCurrentFrame.mvBezierCurves.size(),
+                         mCurrentFrame.mvpMapBeziers.size()));
+
+            for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
+            {
+                MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[curveIndex];
+                if (pMapCurve && mCurrentFrame.mbBezierOutliersValid &&
+                    curveIndex < mCurrentFrame.mvbBezierOutlier.size() &&
+                    mCurrentFrame.mvbBezierOutlier[curveIndex])
                 {
-                    nBeziers++;
+                    mCurrentFrame.mvpMapBeziers[curveIndex] = static_cast<MapCurve *>(NULL);
+                    pKF->EraseMapCurveMatch(static_cast<int>(curveIndex));
+                    continue;
                 }
 
-                if (nBeziers > maxBezier)
-                    break;
+                if (pMapCurve && !pMapCurve->isBad() && pMapCurve->Observations() > 0)
+                    continue;
+
+                if (pMapCurve)
+                {
+                    mCurrentFrame.mvpMapBeziers[curveIndex] = static_cast<MapCurve *>(NULL);
+                    pKF->EraseMapCurveMatch(static_cast<int>(curveIndex));
+                }
+
+                const BezierCurve &curve = mCurrentFrame.mvBezierCurves[curveIndex];
+                const size_t sampleCount = std::min(
+                    curve.sampledPoints.size(), curve.depths.size());
+                std::vector<Eigen::Vector3f> worldPoints;
+                worldPoints.reserve(sampleCount);
+
+                for (size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+                {
+                    const float depth = curve.depths[sampleIndex];
+                    if (!std::isfinite(depth) || depth <= 0.0f)
+                        continue;
+
+                    const Eigen::Vector2f &sample = curve.sampledPoints[sampleIndex];
+                    if (!sample.allFinite())
+                        continue;
+
+                    Eigen::Vector3f cameraPoint = mCurrentFrame.mpCamera->unprojectEig(
+                        cv::Point2f(sample.x(), sample.y()));
+                    if (!cameraPoint.allFinite() || std::fabs(cameraPoint.z()) <= 1e-6f)
+                        continue;
+
+                    cameraPoint *= depth / cameraPoint.z();
+                    const Eigen::Vector3f worldPoint = Rwc * cameraPoint + Ow;
+                    if (!worldPoint.allFinite())
+                        continue;
+
+                    if (worldPoints.empty() ||
+                        (worldPoint - worldPoints.back()).squaredNorm() > 1e-10f)
+                    {
+                        worldPoints.push_back(worldPoint);
+                    }
+                }
+
+                if (worldPoints.size() < 3)
+                {
+                    pKF->EraseMapCurveMatch(static_cast<int>(curveIndex));
+                    continue;
+                }
+
+                MapCurve *pNewMapCurve = new MapCurve(
+                    worldPoints, pKF, mpAtlas->GetCurrentMap());
+                pNewMapCurve->AddObservation(pKF, static_cast<int>(curveIndex));
+                pKF->AddMapCurve(pNewMapCurve, curveIndex);
+                mpAtlas->AddMapCurve(pNewMapCurve);
+
+                mCurrentFrame.mvpMapBeziers[curveIndex] = pNewMapCurve;
             }
         }
 
@@ -3676,31 +5281,37 @@ namespace ORB_SLAM3
         }
     }
 
-    void Tracking::SearchLocalBeziers()
+    void Tracking::SearchLocalCurves()
     {
-        for (vector<MapBezier *>::iterator vit = mCurrentFrame.mvpMapBeziers.begin(), vend = mCurrentFrame.mvpMapBeziers.end(); vit != vend; vit++)
+        std::unordered_set<MapCurve *> observedMapCurves;
+        for (vector<MapCurve *>::iterator vit = mCurrentFrame.mvpMapBeziers.begin(), vend = mCurrentFrame.mvpMapBeziers.end(); vit != vend; vit++)
         {
-            MapBezier *pMB = *vit;
+            MapCurve *pMB = *vit;
             if (pMB)
             {
                 if (pMB->isBad())
                 {
-                    *vit = static_cast<MapBezier *>(NULL);
+                    *vit = static_cast<MapCurve *>(NULL);
                 }
                 else
                 {
-                    pMB->IncreaseVisible();
-                    pMB->mnLastFrameSeen = mCurrentFrame.mnId;
-                    pMB->mbTrackInView = false;
+                    if (observedMapCurves.insert(pMB).second)
+                    {
+                        pMB->IncreaseVisible();
+                        pMB->mnLastFrameSeen = mCurrentFrame.mnId;
+                        // Keep an already matched map curve available as an
+                        // anchor for additional split fragments.
+                        pMB->mbTrackInView = true;
+                    }
                 }
             }
         }
 
         int nToMatch = 0;
 
-        for (vector<MapBezier *>::iterator vit = mvpLocalMapBeziers.begin(), vend = mvpLocalMapBeziers.end(); vit != vend; vit++)
+        for (vector<MapCurve *>::iterator vit = mvpLocalMapCurves.begin(), vend = mvpLocalMapCurves.end(); vit != vend; vit++)
         {
-            MapBezier *pMB = *vit;
+            MapCurve *pMB = *vit;
 
             if (pMB->mnLastFrameSeen == mCurrentFrame.mnId)
                 continue;
@@ -3714,10 +5325,10 @@ namespace ORB_SLAM3
             }
         }
 
-        if (nToMatch > 0)
+        if (nToMatch > 0 || !observedMapCurves.empty())
         {
             BezierMatcher matcher;
-            matcher.SearchByProjection(mCurrentFrame, mvpLocalMapBeziers);
+            matcher.SearchByProjection(mCurrentFrame, mvpLocalMapCurves);
         }
     }
 
@@ -3728,12 +5339,24 @@ namespace ORB_SLAM3
     {
         // This is for visualization
         mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
-        mpAtlas->SetReferenceMapBeziers(mvpLocalMapBeziers);
+        mpAtlas->SetReferenceMapCurves(mvpLocalMapCurves);
 
         // Update
         UpdateLocalKeyFrames();
         UpdateLocalPoints();
-        UpdateLocalBeziers();
+        UpdateLocalCurves();
+    }
+
+    void Tracking::UpdateLocalMapWithCurves()
+    {
+        // This is for visualization
+        mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
+        mpAtlas->SetReferenceMapCurves(mvpLocalMapCurves);
+
+        // Update
+        UpdateLocalKeyFramesWithCurves();
+        UpdateLocalPoints();
+        UpdateLocalCurves();
     }
 
     // 根据mvpLocalKeyFrames中的关键帧，找出这些关键帧观测到的地图点，并把这些地图点加入mvpLocalMapPoints中
@@ -3766,21 +5389,21 @@ namespace ORB_SLAM3
         }
     }
 
-    void Tracking::UpdateLocalBeziers()
+    void Tracking::UpdateLocalCurves()
     {
-        mvpLocalMapBeziers.clear();
+        mvpLocalMapCurves.clear();
 
         int count_pts = 0;
 
         for (vector<KeyFrame *>::const_reverse_iterator itKF = mvpLocalKeyFrames.rbegin(), itEndKF = mvpLocalKeyFrames.rend(); itKF != itEndKF; ++itKF)
         {
             KeyFrame *pKF = *itKF;
-            const vector<MapBezier *> vpMPs = pKF->GetMapBezierMatches();
+            const vector<MapCurve *> vpMPs = pKF->GetMapCurveMatches();
 
-            for (vector<MapBezier *>::const_iterator itMP = vpMPs.begin(), itEndMP = vpMPs.end(); itMP != itEndMP; itMP++)
+            for (vector<MapCurve *>::const_iterator itMP = vpMPs.begin(), itEndMP = vpMPs.end(); itMP != itEndMP; itMP++)
             {
 
-                MapBezier *pMB = *itMP;
+                MapCurve *pMB = *itMP;
                 if (!pMB)
                     continue;
                 if (pMB->mnTrackReferenceForFrame == mCurrentFrame.mnId)
@@ -3788,7 +5411,7 @@ namespace ORB_SLAM3
                 if (!pMB->isBad())
                 {
                     ++count_pts;
-                    mvpLocalMapBeziers.push_back(pMB);
+                    mvpLocalMapCurves.push_back(pMB);
                     pMB->mnTrackReferenceForFrame = mCurrentFrame.mnId;
                 }
             }
@@ -3798,7 +5421,18 @@ namespace ORB_SLAM3
     // 填充mvpLocalKeyFrames并找出与当前帧观测到的特征点数量最多的关键帧作为参考关键帧候选
     void Tracking::UpdateLocalKeyFrames()
     {
-        // Each map point vote for the keyframes in which it has been observed
+        UpdateLocalKeyFrames(false);
+    }
+
+    void Tracking::UpdateLocalKeyFramesWithCurves()
+    {
+        UpdateLocalKeyFrames(true);
+    }
+
+    void Tracking::UpdateLocalKeyFrames(const bool bUseCurves)
+    {
+        // Each map point, and when requested each map curve, votes for the
+        // keyframes in which it has been observed.
         map<KeyFrame *, int> keyframeCounter;
         if (!mpAtlas->isImuInitialized() || (mCurrentFrame.mnId < mnLastRelocFrameId + 2))
         {
@@ -3817,6 +5451,37 @@ namespace ORB_SLAM3
                     else
                     {
                         mCurrentFrame.mvpMapPoints[i] = NULL;
+                    }
+                }
+            }
+
+            if (bUseCurves)
+            {
+                std::unordered_set<MapCurve *> processedMapCurves;
+                const size_t curveCount = std::min(
+                    static_cast<size_t>(std::max(0, mCurrentFrame.NC)),
+                    mCurrentFrame.mvpMapBeziers.size());
+                for (size_t i = 0; i < curveCount; ++i)
+                {
+                    MapCurve *pMapCurve = mCurrentFrame.mvpMapBeziers[i];
+                    if (!pMapCurve)
+                        continue;
+
+                    if (pMapCurve->isBad())
+                    {
+                        mCurrentFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                        continue;
+                    }
+
+                    if (!processedMapCurves.insert(pMapCurve).second)
+                        continue;
+
+                    const map<KeyFrame *, int> observations = pMapCurve->GetObservations();
+                    for (map<KeyFrame *, int>::const_iterator it = observations.begin(),
+                                                              itend = observations.end();
+                         it != itend; ++it)
+                    {
+                        keyframeCounter[it->first]++;
                     }
                 }
             }
@@ -3841,6 +5506,37 @@ namespace ORB_SLAM3
                     {
                         // MODIFICATION
                         mLastFrame.mvpMapPoints[i] = NULL;
+                    }
+                }
+            }
+
+            if (bUseCurves)
+            {
+                std::unordered_set<MapCurve *> processedMapCurves;
+                const size_t curveCount = std::min(
+                    static_cast<size_t>(std::max(0, mLastFrame.NC)),
+                    mLastFrame.mvpMapBeziers.size());
+                for (size_t i = 0; i < curveCount; ++i)
+                {
+                    MapCurve *pMapCurve = mLastFrame.mvpMapBeziers[i];
+                    if (!pMapCurve)
+                        continue;
+
+                    if (pMapCurve->isBad())
+                    {
+                        mLastFrame.mvpMapBeziers[i] = static_cast<MapCurve *>(NULL);
+                        continue;
+                    }
+
+                    if (!processedMapCurves.insert(pMapCurve).second)
+                        continue;
+
+                    const map<KeyFrame *, int> observations = pMapCurve->GetObservations();
+                    for (map<KeyFrame *, int>::const_iterator it = observations.begin(),
+                                                              itend = observations.end();
+                         it != itend; ++it)
+                    {
+                        keyframeCounter[it->first]++;
                     }
                 }
             }

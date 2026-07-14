@@ -1,37 +1,48 @@
-#include "MapBezier.h"
+#include "MapCurve.h"
 
 namespace ORB_SLAM3
 {
 
-    long unsigned int MapBezier::nNextId = 0;
-    std::mutex MapBezier::mGlobalMutex;
+    long unsigned int MapCurve::nNextId = 0;
+    std::mutex MapCurve::mGlobalMutex;
 
-    MapBezier::MapBezier(const std::vector<Eigen::Vector3f> &vWorldPoints, KeyFrame *pRefKF, Map *pMap) : mnFirstKFid(pRefKF->mnId), mnFirstFrame(pRefKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mbBad(false),
+    MapCurve::MapCurve(const std::vector<Eigen::Vector3f> &vWorldPoints, KeyFrame *pRefKF, Map *pMap) : mnFirstKFid(pRefKF->mnId), mnFirstFrame(pRefKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mbBad(false),
                                                                                                           mpRefKF(pRefKF), mpMap(pMap), mnOriginMapId(pMap->GetId()), mpReplaced(nullptr),
                                                                                                           mnVisible(1), mnFound(1), mnLastFrameSeen(0)
     {
         SetWorldPoints(vWorldPoints);
 
-        NP = vWorldPoints.size();
+        NC = vWorldPoints.size();
 
         std::unique_lock<std::mutex> lock(mpMap->mMutexPointCreation);
         mnId = nNextId++;
     }
 
-    void MapBezier::AddObservation(KeyFrame *pKF, int idx)
+    MapCurve::MapCurve(const std::vector<Eigen::Vector3f> &vWorldPoints, Map *pMap, Frame *pFrame) : mnFirstKFid(-1), mnFirstFrame(pFrame->mnId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mbBad(false),
+                                                                                                      mpRefKF(static_cast<KeyFrame *>(NULL)), mpMap(pMap), mnOriginMapId(pMap->GetId()), mpReplaced(nullptr),
+                                                                                                      mnVisible(1), mnFound(1), mnLastFrameSeen(0)
+    {
+        SetWorldPoints(vWorldPoints);
+
+        NC = vWorldPoints.size();
+
+        std::unique_lock<std::mutex> lock(mpMap->mMutexPointCreation);
+        mnId = nNextId++;
+    }
+
+    void MapCurve::AddObservation(KeyFrame *pKF, int idx)
     {
         std::unique_lock<std::mutex> lock(mMutexFeatures);
 
+        // 这个KeyFrame是否已经观察过该Bezier？
         if (mObservations.count(pKF))
             return;
 
         mObservations[pKF] = idx;
         nObs++;
-
-        assert(nObs == static_cast<int>(mObservations.size()));
     }
 
-    void MapBezier::EraseObservation(KeyFrame *pKF)
+    void MapCurve::EraseObservation(KeyFrame *pKF)
     {
         bool bBad = false;
         {
@@ -56,13 +67,13 @@ namespace ORB_SLAM3
             SetBadFlag();
     }
 
-    std::map<KeyFrame *, int> MapBezier::GetObservations()
+    std::map<KeyFrame *, int> MapCurve::GetObservations()
     {
         std::unique_lock<std::mutex> lock(mMutexFeatures);
         return mObservations;
     }
 
-    int MapBezier::GetIndexInKeyFrame(KeyFrame *pKF)
+    int MapCurve::GetIndexInKeyFrame(KeyFrame *pKF)
     {
         unique_lock<mutex> lock(mMutexFeatures);
         if (mObservations.count(pKF))
@@ -71,32 +82,32 @@ namespace ORB_SLAM3
             return -1;
     }
 
-    bool MapBezier::IsInKeyFrame(KeyFrame *pKF)
+    bool MapCurve::IsInKeyFrame(KeyFrame *pKF)
     {
         unique_lock<mutex> lock(mMutexFeatures);
         return (mObservations.count(pKF));
     }
 
-    std::vector<Eigen::Vector3f> MapBezier::GetWorldPoints()
+    std::vector<Eigen::Vector3f> MapCurve::GetWorldPoints()
     {
         std::unique_lock<std::mutex> lock(mMutexPos);
         return mvWorldPoints;
     }
 
-    void MapBezier::SetWorldPoints(const std::vector<Eigen::Vector3f> &vWorldPoints)
+    void MapCurve::SetWorldPoints(const std::vector<Eigen::Vector3f> &vWorldPoints)
     {
         std::unique_lock<std::mutex> lock2(mGlobalMutex);
         std::unique_lock<std::mutex> lock(mMutexPos);
         mvWorldPoints = vWorldPoints;
     }
 
-    bool MapBezier::isBad()
+    bool MapCurve::isBad()
     {
         std::unique_lock<std::mutex> lock(mMutexFeatures);
         return mbBad;
     }
 
-    void MapBezier::SetBadFlag()
+    void MapCurve::SetBadFlag()
     {
         map<KeyFrame *, int> obs;
         {
@@ -110,12 +121,12 @@ namespace ORB_SLAM3
         for (map<KeyFrame *, int>::iterator mit = obs.begin(), mend = obs.end(); mit != mend; mit++)
         {
             KeyFrame *pKF = mit->first;
-            pKF->EraseMapBezierMatch(this);
+            pKF->EraseMapCurveMatch(this);
         }
-        mpMap->EraseMapBezier(this);
+        mpMap->EraseMapCurve(this);
     }
 
-    void MapBezier::Replace(MapBezier *pMB)
+    void MapCurve::Replace(MapCurve *pMB)
     {
         if (pMB->mnId == this->mnId)
             return;
@@ -144,7 +155,7 @@ namespace ORB_SLAM3
             {
                 if (indexes != -1)
                 {
-                    pKF->ReplaceMapBezierMatch(this, pMB);
+                    pKF->ReplaceMapCurveMatch(this, pMB);
                     pMB->AddObservation(pKF, indexes);
                 }
             }
@@ -152,7 +163,7 @@ namespace ORB_SLAM3
             {
                 if (indexes != -1)
                 {
-                    pKF->EraseMapBezierMatch(this);
+                    pKF->EraseMapCurveMatch(this);
                 }
             }
         }
@@ -160,41 +171,41 @@ namespace ORB_SLAM3
         pMB->IncreaseVisible(nvisible);
         // pMB->ComputeDistinctiveDescriptors();
 
-        mpMap->EraseMapBezier(this);
+        mpMap->EraseMapCurve(this);
     }
 
-    MapBezier *MapBezier::GetReplaced()
+    MapCurve *MapCurve::GetReplaced()
     {
         unique_lock<mutex> lock1(mMutexFeatures);
         unique_lock<mutex> lock2(mMutexPos);
         return mpReplaced;
     }
 
-    void MapBezier::IncreaseVisible(int n)
+    void MapCurve::IncreaseVisible(int n)
     {
         unique_lock<mutex> lock(mMutexFeatures);
         mnVisible += n;
     }
 
-    void MapBezier::IncreaseFound(int n)
+    void MapCurve::IncreaseFound(int n)
     {
         unique_lock<mutex> lock(mMutexFeatures);
         mnFound += n;
     }
 
-    float MapBezier::GetFoundRatio()
+    float MapCurve::GetFoundRatio()
     {
         unique_lock<mutex> lock(mMutexFeatures);
         return static_cast<float>(mnFound) / mnVisible;
     }
 
-    Map *MapBezier::GetMap()
+    Map *MapCurve::GetMap()
     {
         std::unique_lock<std::mutex> lock(mMutexMap);
         return mpMap;
     }
 
-    int MapBezier::Observations()
+    int MapCurve::Observations()
     {
         std::unique_lock<std::mutex> lock(mMutexFeatures);
         return nObs;

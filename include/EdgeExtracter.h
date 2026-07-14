@@ -1,14 +1,14 @@
 #ifndef EDGE_EXTRACTER_H
 #define EDGE_EXTRACTER_H
 
-#include "edge.h"
-#include "edgeCluster.h"
-#include "bezierCurve.h"
+#include "Edge.h"
+#include "EdgeCluster.h"
+#include "BezierCurve.h"
 
-class edgeExtracter
+class EdgeExtracter
 {
 public:
-    edgeExtracter(double _angleThreshold, double _threshold1, double _threshold2) : angleThreshold(_angleThreshold), threshold1(_threshold1), threshold2(_threshold2) {}
+    EdgeExtracter(double _angleThreshold, double _threshold1, double _threshold2) : angleThreshold(_angleThreshold), threshold1(_threshold1), threshold2(_threshold2) {}
 
     std::vector<Edge> operator()(cv::Mat imGray, cv::Mat imSem = cv::Mat());
 

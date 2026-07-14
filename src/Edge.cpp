@@ -1,4 +1,4 @@
-#include "edge.h"
+#include "Edge.h"
 
 Edge::Edge(int ID, std::vector<orderedEdgePoint> list)
 {

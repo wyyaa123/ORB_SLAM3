@@ -1,6 +1,6 @@
-#include "edgeExtracter.h"
+#include "EdgeExtracter.h"
 
-std::vector<Edge> edgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem)
+std::vector<Edge> EdgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem)
 {
     // Edge extraction and processing
     cv::Canny(imGray, mCanny, threshold1, threshold2, 3, true);
@@ -27,7 +27,7 @@ std::vector<Edge> edgeExtracter::operator()(cv::Mat imGray, cv::Mat imSem)
     return mvEdges;
 }
 
-inline float edgeExtracter::calcAngleBias(float angle_1, float angle_2)
+inline float EdgeExtracter::calcAngleBias(float angle_1, float angle_2)
 {
     float res = fabs(angle_1 - angle_2);
     if (res > 180)
@@ -37,7 +37,7 @@ inline float edgeExtracter::calcAngleBias(float angle_1, float angle_2)
     return res;
 }
 
-void edgeExtracter::preprocessSem(const cv::Mat &imSem)
+void EdgeExtracter::preprocessSem(const cv::Mat &imSem)
 {
     if (imSem.empty())
     {
@@ -91,7 +91,7 @@ void edgeExtracter::preprocessSem(const cv::Mat &imSem)
     mSem = filteredSem;
 }
 
-void edgeExtracter::preprocessEdge()
+void EdgeExtracter::preprocessEdge()
 {
     for (int i = 0; i < mCanny.rows; ++i)
     {
@@ -120,7 +120,7 @@ void edgeExtracter::preprocessEdge()
     }
 }
 
-void edgeExtracter::cvt2OrderedEdges()
+void EdgeExtracter::cvt2OrderedEdges()
 {
     mvEdges.reserve(mvEdgeClusters.size());
 
@@ -149,7 +149,7 @@ void edgeExtracter::cvt2OrderedEdges()
     }
 }
 
-void edgeExtracter::regionGrowthClusteringOCanny(float angle_Thres, const cv::Point &offset)
+void EdgeExtracter::regionGrowthClusteringOCanny(float angle_Thres, const cv::Point &offset)
 {
     cv::Mat visitedMat(mCanny.rows, mCanny.cols, CV_8UC1, cv::Scalar::all(0));
     mvEdgeClusters.clear();
@@ -235,7 +235,7 @@ void edgeExtracter::regionGrowthClusteringOCanny(float angle_Thres, const cv::Po
                 }
             }
 
-            if (current_cluster.size() > 10)
+            if (current_cluster.size() > 30)
             {
                 mvEdgeClusters.emplace_back(std::move(current_cluster));
             }
@@ -243,7 +243,7 @@ void edgeExtracter::regionGrowthClusteringOCanny(float angle_Thres, const cv::Po
     }
 }
 
-void edgeExtracter::getFineSampledPoints(int bias)
+void EdgeExtracter::getFineSampledPoints(int bias)
 {
     for (int i = 0; i < mvEdges.size(); ++i)
     {
@@ -252,7 +252,7 @@ void edgeExtracter::getFineSampledPoints(int bias)
     }
 }
 
-void edgeExtracter::getBezierSampledPoints(int sampleSpacing)
+void EdgeExtracter::getBezierSampledPoints(int sampleSpacing)
 {
     const BezierCurveFitter bezierFitter(1);
     mvBezierCurves.clear();

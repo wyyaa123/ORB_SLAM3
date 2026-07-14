@@ -324,50 +324,6 @@ namespace ORB_SLAM3
         return imWithInfo;
     }
 
-    cv::Mat FrameDrawer::DrawFrameEdges()
-    {
-        unique_lock<mutex> lock(mMutex);
-
-        if (mvEdges.empty())
-            return cv::Mat();
-
-        cv::RNG rng(66);
-        cv::Mat image_viz = mIm.clone();
-
-        if (image_viz.channels() == 3)
-            cv::cvtColor(image_viz, image_viz, cv::COLOR_BGR2GRAY);
-
-        for (int y = 0; y < image_viz.rows; ++y)
-        {
-            for (int x = 0; x < image_viz.cols; ++x)
-            {
-                // 获取当前像素值
-                uchar &pixel = image_viz.at<uchar>(y, x);
-
-                // 将像素值减半，确保不会小于0
-                pixel = static_cast<uchar>(pixel / 1.3);
-            }
-        }
-
-        cv::cvtColor(image_viz, image_viz, cv::COLOR_GRAY2BGR);
-        int maxLabel = 0;
-        for (int i = 0; i < mvEdges.size(); ++i)
-        {
-            int b = rng.uniform(0, 255);
-            int g = rng.uniform(0, 255);
-            int r = rng.uniform(0, 255);
-            cv::Vec3b color = cv::Vec3b(b, g, r);
-            // if(mvEdgeClusters[i].mvPoints.size()<15) continue;
-            for (int j = 0; j < mvEdges[i].mvPoints.size(); ++j)
-            {
-                orderedEdgePoint curr = mvEdges[i].mvPoints[j];
-                image_viz.at<cv::Vec3b>(curr.y, curr.x) = color;
-                cv::circle(image_viz, cv::Point(curr.x, curr.y), 1, color, 1, cv::LINE_AA);
-            }
-        }
-        return image_viz;
-    }
-
     cv::Mat FrameDrawer::DrawFrameBeziers()
     {
         unique_lock<mutex> lock(mMutex);
@@ -482,7 +438,6 @@ namespace ORB_SLAM3
         mvCurrentKeys = pTracker->mCurrentFrame.mvKeys;
         mThDepth = pTracker->mCurrentFrame.mThDepth;
         mvCurrentDepth = pTracker->mCurrentFrame.mvDepth;
-        mvEdges = pTracker->mCurrentFrame.mvEdges;
         mvBezierCurves = pTracker->mCurrentFrame.mvBezierCurves;
 
         if (both)

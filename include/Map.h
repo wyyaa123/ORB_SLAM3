@@ -75,24 +75,24 @@ public:
 
     void AddKeyFrame(KeyFrame* pKF);
     void AddMapPoint(MapPoint* pMP);
-    void AddMapBezier(MapBezier* pMB);
+    void AddMapCurve(MapCurve* pMB);
     void EraseMapPoint(MapPoint* pMP);
-    void EraseMapBezier(MapBezier* pMB);
+    void EraseMapCurve(MapCurve* pMB);
     void EraseKeyFrame(KeyFrame* pKF);
     void SetReferenceMapPoints(const std::vector<MapPoint*> &vpMPs);
-    void SetReferenceMapBeziers(const std::vector<MapBezier *> &vpMBs);
+    void SetReferenceMapCurves(const std::vector<MapCurve *> &vpMBs);
     void InformNewBigChange();
     int GetLastBigChangeIdx();
 
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
-    std::vector<MapBezier *> GetReferenceMapBeziers();
-    std::vector<MapBezier*> GetAllMapBeziers();
+    std::vector<MapCurve *> GetReferenceMapCurves();
+    std::vector<MapCurve*> GetAllMapCurves();
 
     long unsigned int MapPointsInMap();
     long unsigned  KeyFramesInMap();
-    long unsigned int MapBeziersInMap();
+    long unsigned int MapCurvesInMap();
 
     long unsigned int GetId();
 
@@ -167,7 +167,7 @@ protected:
 
     std::set<MapPoint*> mspMapPoints;
     std::set<KeyFrame*> mspKeyFrames;
-    std::set<MapBezier*> mspMapBeziers;
+    std::set<MapCurve*> mspMapCurves;
 
     // Save/load, the set structure is broken in libboost 1.58 for ubuntu 16.04, a vector is serializated
     std::vector<MapPoint*> mvpBackupMapPoints;
@@ -180,7 +180,7 @@ protected:
     unsigned long int mnBackupKFlowerID;
 
     std::vector<MapPoint*> mvpReferenceMapPoints;
-    std::vector<MapBezier*> mvpReferenceMapBeziers;
+    std::vector<MapCurve*> mvpReferenceMapCurves;
 
     bool mbImuInitialized;
 

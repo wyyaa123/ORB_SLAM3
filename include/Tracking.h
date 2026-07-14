@@ -196,9 +196,11 @@ namespace ORB_SLAM3
     protected:
         // Main tracking function. It is independent of the input sensor.
         void Track();
+        void TrackWithCurves();
 
         // Map initialization for stereo and RGB-D
         void StereoInitialization();
+        void StereoInitializationWithCurves();
 
         // Map initialization for monocular
         void MonocularInitialization();
@@ -206,24 +208,34 @@ namespace ORB_SLAM3
         void CreateInitialMapMonocular();
 
         void CheckReplacedInLastFrame();
+        void CheckReplacedInLastFrameWithCurves();
         bool TrackReferenceKeyFrame();
+        bool TrackReferenceKeyFrameWithCurves();
         void UpdateLastFrame();
+        void UpdateLastFrameWithCurves();
         bool TrackWithMotionModel();
+        bool TrackWithMotionModelWithCurves();
         bool PredictStateIMU();
 
         bool Relocalization();
 
         void UpdateLocalMap();
+        void UpdateLocalMapWithCurves();
         void UpdateLocalPoints();
-        void UpdateLocalBeziers();
+        void UpdateLocalCurves();
         void UpdateLocalKeyFrames();
+        void UpdateLocalKeyFrames(const bool bUseCurves);
+        void UpdateLocalKeyFramesWithCurves();
 
         bool TrackLocalMap();
+        bool TrackLocalMapWithCurves();
         void SearchLocalPoints();
-        void SearchLocalBeziers();
+        void SearchLocalCurves();
 
         bool NeedNewKeyFrame();
+        bool NeedNewKeyFrameWithCurves();
         void CreateNewKeyFrame();
+        void CreateNewKeyFrameWithCurves();
 
         // Perform preintegration from last frame
         void PreintegrateIMU();
@@ -275,7 +287,7 @@ namespace ORB_SLAM3
         KeyFrame *mpReferenceKF;
         std::vector<KeyFrame *> mvpLocalKeyFrames;
         std::vector<MapPoint *> mvpLocalMapPoints;
-        std::vector<MapBezier *> mvpLocalMapBeziers;
+        std::vector<MapCurve *> mvpLocalMapCurves;
 
         // System
         System *mpSystem;
@@ -342,6 +354,7 @@ namespace ORB_SLAM3
         bool mbRGB;
 
         list<MapPoint *> mlpTemporalPoints;
+        list<MapCurve *> mlpTemporalCurves;
 
         // int nMapChangeIndex;
 

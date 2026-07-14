@@ -345,10 +345,6 @@ namespace ORB_SLAM3
                 // cv::Mat imKfEdge = mpFrameDrawer->DrawKeyFrameEdges();
                 // if(!imKfEdge.empty()) cv::imshow("ORB-SLAM3: Reference KeyFrame Edges", imKfEdge);
 
-                cv::Mat imEdge = mpFrameDrawer->DrawFrameEdges();
-                if(!imEdge.empty()) cv::imshow("ORB-SLAM3: Current Frame Edges", imEdge);
-                else std::cerr << "No current frame edges to display." << std::endl;
-
                 // cv::Mat imSem = mpFrameDrawer->DrawFrameSemanticMask(trackedImageScale);
                 // if (!imSem.empty()) cv::imshow("ORB-SLAM3: Current Frame Semantic Mask", imSem);
 
